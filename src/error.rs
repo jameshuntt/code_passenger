@@ -5,6 +5,14 @@ pub enum PassengerError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+        #[error("serde_json error: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+
+
+        #[error("toml error: {0}")]
+    TomlError(#[from] toml::de::Error),
+
+
     #[error("invalid Cargo.toml: {0}")]
     Toml(String),
 

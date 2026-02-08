@@ -9,6 +9,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 fn rel_to_src(src_root: &Path, p: &Path) -> Result<String> {
@@ -114,7 +115,7 @@ pub struct RunContext {
     pub manifest_path: PathBuf,
     pub lang: String,
 }
-
+#[derive(Serialize, Deserialize)]
 pub struct EngineOutput {
     pub manifest: ManifestInfo,
     pub reports: Vec<FileReport>,

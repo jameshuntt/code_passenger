@@ -1,6 +1,8 @@
 use crate::analysis::run as r;
 use crate::engine::{RunContext, run_scan};
-use crate::error::{Result, PassengerError};
+use crate::error::{PassengerError, Result};
+use crate::passenger::command::{PassengerCmd, passenger};
+use crate::passenger::{self, CheckpointOptions, PassengerStore};
 use crate::{packs, plans};
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -22,10 +24,10 @@ pub struct Cli {
     #[arg(long)]
     pub manifest: Option<PathBuf>,
 
-    #[arg(long, default_value="rust")]
+    #[arg(long, default_value = "rust")]
     pub lang: String,
 
-    #[arg(long, default_value="verbose")]
+    #[arg(long, default_value = "verbose")]
     pub plan: String,
 
     /// Emit JSON instead of human output
@@ -58,20 +60,27 @@ pub enum Command {
         name: String,
 
         /// like "net/http"
-        #[arg(long, default_value="")]
+        #[arg(long, default_value = "")]
         path: String,
 
-        #[arg(long, default_value="default")]
+        #[arg(long, default_value = "default")]
         scaffold_plan: String,
 
         #[arg(long)]
         write: bool,
-    }
+    },
+    Passenger {
+        #[clap(subcommand)]
+        cmd: PassengerCmd,
+    },
 }
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let manifest_path = cli.manifest.clone().unwrap_or_else(|| cli.root.join("Cargo.toml"));
+    let manifest_path = cli
+        .manifest
+        .clone()
+        .unwrap_or_else(|| cli.root.join("Cargo.toml"));
 
     let ctx = RunContext {
         root: cli.root.clone(),
@@ -85,7 +94,7 @@ pub fn run() -> Result<()> {
             let out = run_scan(&ctx)?;
             if cli.json {
                 // println!("{}", serde_json::to_string_pretty(&out.reports).unwrap());
-                
+
                 let a = r(&out);
                 let file = std::fs::File::create("report.json")?;
                 let writer = std::io::BufWriter::new(file);
@@ -98,8 +107,8 @@ pub fn run() -> Result<()> {
                 for r in &out.reports {
                     println!("== {} ==", r.document.relative_path);
 
-                    print_set("used_deps", &r.used.packages);   // or r.used.packages
-                    print_set("used_mods", &r.used.modules);    // or r.used.modules
+                    print_set("used_deps", &r.used.packages); // or r.used.packages
+                    print_set("used_mods", &r.used.modules); // or r.used.modules
                     print_set("corpus_features", &r.corpus_features);
 
                     // Optional: quick totals
@@ -115,7 +124,7 @@ pub fn run() -> Result<()> {
                     println!();
                 }
             }
-        },
+        }
 
         Command::Annotate { write, check } => {
             let out = run_scan(&ctx)?;
@@ -142,14 +151,21 @@ pub fn run() -> Result<()> {
             if check && changed_any {
                 return Err(PassengerError::ChangesNeeded);
             }
-        },
+        }
 
-        Command::Scaffold { kind, name, path, scaffold_plan, write } => {
+        Command::Scaffold {
+            kind,
+            name,
+            path,
+            scaffold_plan,
+            write,
+        } => {
             let pack = packs::get_pack(&cli.lang)?;
             let plan = crate::scaffolds::get_scaffold_plan(&scaffold_plan)?;
 
-            let kind = crate::model::ScaffoldKind::parse(&kind)
-                .ok_or_else(|| PassengerError::Unsupported(format!("unknown scaffold kind '{kind}'")))?;
+            let kind = crate::model::ScaffoldKind::parse(&kind).ok_or_else(|| {
+                PassengerError::Unsupported(format!("unknown scaffold kind '{kind}'"))
+            })?;
 
             let module_path: Vec<String> = path
                 .split('/')
@@ -159,11 +175,17 @@ pub fn run() -> Result<()> {
 
             let out = pack.scaffold(
                 plan.as_ref(),
-                crate::model::ScaffoldRequest { kind, name, module_path }
+                crate::model::ScaffoldRequest {
+                    kind,
+                    name,
+                    module_path,
+                },
             )?;
 
             if out.files.is_empty() {
-                return Err(PassengerError::Unsupported("scaffold produced no files".into()));
+                return Err(PassengerError::Unsupported(
+                    "scaffold produced no files".into(),
+                ));
             }
 
             for (rel, content) in out.files {
@@ -179,12 +201,11 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-
+        Command::Passenger { cmd } => { passenger(cmd,ctx)? }
     }
 
     Ok(())
 }
-
 
 use std::collections::BTreeMap;
 
@@ -202,20 +223,20 @@ fn preview_syms(syms: &BTreeMap<String, usize>, top_n: usize) -> String {
         .join(", ")
 }
 
-fn print_counts(
-    title: &str,
-    counts: &BTreeMap<String, BTreeMap<String, usize>>,
-    top_n: usize,
-) {
+fn print_counts(title: &str, counts: &BTreeMap<String, BTreeMap<String, usize>>, top_n: usize) {
     if counts.is_empty() {
         return;
     }
 
     println!("{title}:");
     for (dep, syms) in counts {
-        if syms.is_empty() { continue; }
+        if syms.is_empty() {
+            continue;
+        }
         let preview = preview_syms(syms, top_n);
-        if preview.is_empty() { continue; }
+        if preview.is_empty() {
+            continue;
+        }
         println!("  {dep}: {preview}");
     }
 }

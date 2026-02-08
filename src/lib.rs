@@ -3,6 +3,7 @@ pub mod cargo;
 pub mod model;
 pub mod error;
 pub mod plans;
+pub mod passenger;
 pub mod packs;
 pub mod engine;
 pub mod scaffolds;
