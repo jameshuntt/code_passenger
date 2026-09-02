@@ -6,7 +6,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Language-pack + header-plan driven code annotator: scans usage + auto-generates feature gates and doc headers."
 
-authors = ["James Hunt <jameshuntdevelopment@gmail.com>"]
+authors = ["James Hunt <james@1o.business>"]
 repository = "https://github.com/jameshuntt/code_passenger"
 readme = "README.md"
 
