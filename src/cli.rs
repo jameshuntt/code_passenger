@@ -2,8 +2,7 @@ use crate::analysis::run as r;
 use crate::engine::{RunContext, run_scan};
 use crate::error::{PassengerError, Result};
 use crate::passenger::command::{PassengerCmd, passenger};
-use crate::passenger::{self, CheckpointOptions, PassengerStore};
-use crate::{packs, plans};
+use crate::{commands, packs, plans};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
@@ -72,6 +71,74 @@ pub enum Command {
     Passenger {
         #[clap(subcommand)]
         cmd: PassengerCmd,
+    },
+
+    // ---- klepto-backed commands (GATE_RULES.md) ----
+    /// Plan, prove (real `cargo check` on a scratch copy) and apply feature
+    /// gates from a klepto.toml spec
+    Gate {
+        /// The klepto.toml spec (package → optional deps / features / default)
+        #[arg(long)]
+        spec: PathBuf,
+        /// Package to gate (defaults to the root manifest's [package].name)
+        #[arg(long)]
+        package: Option<String>,
+        /// Write the edits to the tree once the oracle converged
+        #[arg(long)]
+        write: bool,
+        /// Exit 1 when there is gating to do (CI mode); never writes
+        #[arg(long)]
+        check: bool,
+        /// Converge rounds with the cargo oracle
+        #[arg(long, default_value_t = 3)]
+        max_rounds: usize,
+        /// Skip the cargo oracle (plan and diff only)
+        #[arg(long)]
+        no_cargo: bool,
+    },
+    /// Features, dependencies and use sites per package
+    FeatureMap {
+        #[arg(long)]
+        package: Option<String>,
+    },
+    /// Use sites of a dependency, or of the dependencies a feature enables
+    FeatureSites {
+        /// Dependency or feature name
+        target: String,
+        #[arg(long)]
+        package: Option<String>,
+    },
+    /// Review what gating a dependency or feature changes (never writes)
+    FeatureProbe {
+        /// Dependency or feature name
+        target: String,
+        #[arg(long)]
+        package: Option<String>,
+        /// Review against this klepto.toml instead of the current manifest
+        #[arg(long)]
+        spec: Option<PathBuf>,
+    },
+    /// Write the klepto receipt (and, with --kg, the knowledge-graph export)
+    Receipt {
+        /// Output file (default: <root>/receipt.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Directory for knowledge.ndjson and challenges.ndjson
+        #[arg(long)]
+        kg: Option<PathBuf>,
+    },
+    /// Run klepto's analyses under a policy; the exit code is the verdict's
+    Lint {
+        /// Policy TOML ([levels] / [max]); default denies KLEP010 and KLEP011
+        #[arg(long)]
+        policy: Option<PathBuf>,
+    },
+    /// Repeated-code candidates (extract fn, parameterize, generic, trait, macro)
+    Patterns {
+        #[arg(long, default_value_t = 16)]
+        min_tokens: usize,
+        #[arg(long, default_value_t = 20)]
+        top: usize,
     },
 }
 
@@ -202,6 +269,74 @@ pub fn run() -> Result<()> {
             }
         }
         Command::Passenger { cmd } => { passenger(cmd,ctx)? }
+
+        // ---- klepto-backed commands (GATE_RULES.md) ----
+        Command::Gate { spec, package, write, check, max_rounds, no_cargo } => {
+            let opts = commands::gate::GateOptions { spec, package, write, check, max_rounds, no_cargo };
+            let out = commands::gate::run(&cli.root, &opts)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&out.plan)?);
+            } else {
+                print!("{}", commands::gate::render(&out));
+            }
+            if out.exit_code != 0 {
+                std::process::exit(out.exit_code);
+            }
+        }
+        Command::FeatureMap { package } => {
+            let m = commands::features::feature_map(&cli.root, package.as_deref())?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&m)?);
+            } else {
+                print!("{}", commands::features::render_map(&m));
+            }
+        }
+        Command::FeatureSites { target, package } => {
+            let s = commands::features::feature_sites(&cli.root, package.as_deref(), &target)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else {
+                print!("{}", commands::features::render_sites(&s));
+            }
+        }
+        Command::FeatureProbe { target, package, spec } => {
+            let p = commands::features::feature_probe(&cli.root, package.as_deref(), &target, spec.as_deref())?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&p)?);
+            } else {
+                print!("{}", commands::features::render_probe(&p));
+            }
+        }
+        Command::Receipt { out, kg } => {
+            let out = out.unwrap_or_else(|| cli.root.join("receipt.json"));
+            let w = commands::receipt::write(&cli.root, &out, kg.as_deref())?;
+            println!("wrote {}", w.receipt.display());
+            if let Some(k) = &w.knowledge {
+                println!("wrote {}", k.display());
+            }
+            if let Some(c) = &w.challenges {
+                println!("wrote {}", c.display());
+            }
+        }
+        Command::Lint { policy } => {
+            let v = commands::lint::run(&cli.root, policy.as_deref())?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                println!("{}", v.summary());
+            }
+            if v.exit_code != 0 {
+                std::process::exit(v.exit_code);
+            }
+        }
+        Command::Patterns { min_tokens, top } => {
+            let r = commands::patterns::run(&cli.root, &klepto::MiningOptions { min_tokens, min_members: 2 })?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                print!("{}", commands::patterns::render(&r, top));
+            }
+        }
     }
 
     Ok(())

@@ -44,8 +44,8 @@ impl RustPack {
 
     fn replace_or_insert(original: &str, header: &str) -> String {
         // Replace existing marked region if present
-        if let Some(beg) = original.find(Self::BEGIN_MARK) {
-            if let Some(end) = original.find(Self::END_MARK) {
+        if let Some(beg) = original.find(Self::BEGIN_MARK)
+            && let Some(end) = original.find(Self::END_MARK) {
                 let end_line = original[end..].find('\n').map(|i| end + i + 1).unwrap_or(original.len());
                 let mut out = String::new();
                 out.push_str(&original[..beg]);
@@ -53,7 +53,6 @@ impl RustPack {
                 out.push_str(&original[end_line..]);
                 return out;
             }
-        }
 
         // Insert after leading inner attrs `#![...]` (keep them first)
         let mut idx = 0usize;

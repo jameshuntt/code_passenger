@@ -1,3 +1,4 @@
+use klepto::{UseSite, UseSitesCount};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,29 +38,6 @@ pub struct FeatureNote {
     pub corpus: bool,
     pub used_in_file: bool,
 }
-
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum UseKind {
-    UseStmt,       // `use dep::foo`
-    ExternCrate,   // `extern crate dep;`
-    Attribute,     // `#[dep::something]`
-    MacroCall,     // `dep::foo!()`
-    Path,          // everything else `dep::foo::bar`
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UseSite {
-    pub dep: String,     // "regex"
-    pub path: String,    // "regex::RegexSet"
-    pub head: String,    // "RegexSet" (first segment after dep::)
-    pub kind: UseKind,
-    pub line: usize,     // 1-based
-    pub scope: String,   // "fn run" / "impl Foo" / "file"
-}
-
-pub type UseSites = BTreeMap<String, BTreeMap<String, usize>>;
-pub type UseSitesCount = UseSites;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReport {

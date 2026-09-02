@@ -37,7 +37,7 @@ pub mod rust;
 pub fn get_pack(lang: &str) -> Result<Box<dyn LanguagePack>> {
     match lang {
         #[cfg(feature = "lang_rust")]
-        "rust" | "rs" => Ok(Box::new(rust::RustPack::default())),
+        "rust" | "rs" => Ok(Box::new(rust::RustPack)),
         _ => Err(PassengerError::Unsupported(format!("language pack '{lang}' not available"))),
     }
 }

@@ -30,3 +30,9 @@ pub enum PassengerError {
 }
 
 pub type Result<T> = std::result::Result<T, PassengerError>;
+
+impl From<klepto::KleptoError> for PassengerError {
+    fn from(e: klepto::KleptoError) -> Self {
+        PassengerError::Path(format!("klepto: {e}")) // pick your variant
+    }
+}

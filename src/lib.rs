@@ -7,4 +7,8 @@ pub mod passenger;
 pub mod packs;
 pub mod engine;
 pub mod scaffolds;
+pub mod scanning;
 pub mod analysis;
+pub mod commands;
+pub mod gate;
+pub mod oracle;

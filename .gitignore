@@ -1,4 +1,3 @@
 /target
-/.vscode
-/bundle.txt
-/_
+**/target
+.DS_Store
