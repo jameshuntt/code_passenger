@@ -110,7 +110,7 @@ pub fn passenger(cmd:PassengerCmd, ctx:crate::engine::RunContext) -> Result<()> 
                     c.stats.removed_lines,
                     c.note.clone().unwrap_or_default()
                 );
-                cur = c.parents.get(0).cloned();
+                cur = c.parents.first().cloned();
             }
         }
     }
