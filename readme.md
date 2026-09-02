@@ -150,4 +150,4 @@ unchanged in 0.2.0.
 - the oracle runs `cargo` offline; path dependencies only, nothing is
   downloaded and nothing outside the scratch copy is touched.
 - the rules every command follows, with the fixture and tests that pin
-  them, are in `GATE_RULES.md` and `tests/gate.rs`.
+  them, are in `the gate rules (cited in the source)` and `tests/gate.rs`.

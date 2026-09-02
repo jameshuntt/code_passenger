@@ -8,7 +8,7 @@ description = "Language-pack + header-plan driven code annotator: scans usage + 
 
 authors = ["James Hunt <james@1o.business>"]
 repository = "https://github.com/jameshuntt/code_passenger"
-include = ["src/**", "Cargo.toml", "README.md", "GATE_RULES.md", "LICENSE*"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE*"]
 readme = "README.md"
 
 [[bin]]
