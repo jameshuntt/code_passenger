@@ -40,7 +40,7 @@ chrono = { version = "0.4.40", features = ["serde"] }
 zstd = "0.13"
 similar = "2.6"
 
-klepto = { path = "../klepto" }
+klepto = "0.2.0"
 tempfile = "3.19.1"
 
 [dev-dependencies]
