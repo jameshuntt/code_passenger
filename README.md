@@ -276,8 +276,8 @@ code-passenger patterns --root . --top 20                     # repeated code: e
 
 ### notes
 
-- klepto is a path dependency (0.3.1, pending); so are custodian_kit and its
-  path dependencies (bundles, maintenance).
+- klepto 0.3.1 and custodian_kit 0.1.0 come from crates.io; there are no path
+  dependencies.
 - the cargo check runs `cargo` offline; path dependencies only, nothing is
   downloaded and nothing outside the scratch copy is touched.
 - edits inside macro bodies are out of scope; carriers klepto cannot name

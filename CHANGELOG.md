@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (pending)
+## 0.3.0 (2026-10-19)
 
 0.2.0 planned one package at a time from a klepto.toml spec. 0.3.0 plans a
 whole workspace from one features document, says what each feature takes
@@ -9,7 +9,11 @@ every write, runs the work as an agent job, and declares every command as an
 xccute line. The 0.2.0 `gate` loop is unchanged; its 17 tests pass as they
 were.
 
-### klepto 0.3.1, by path
+### klepto 0.3.1 and custodian_kit 0.1.0, from crates.io
+
+- klepto 0.3.1 and custodian_kit 0.1.0 by version, no path dependencies;
+  klepto is the one custodian_kit reads with, so a parse made here is the
+  kit's type.
 
 - klepto 0.3.0 moved the knowledge-graph export under `klepto::receipt`.
   The receipt command imports it from there.
@@ -137,14 +141,37 @@ were.
   Proof: `init_writes_the_current_models_and_planning_it_changes_nothing`
   (both twins, before and after the feature exists, and core-1o's workspace
   checking the document).
-- `agent init` makes custodian_kit's job layout and writes the `features`
+- `agent init` makes custodian_kit's job layout and writes the `features-apply`
   job: plan, apply exactly that plan (it reads the plan step's receipt and
   refuses, `[CP0025]`, if the code changed since), annotate (it reads the
   apply step's receipt). Each step is a declared line started by
   custodian_kit's executor, its receipt in the journal; the folder moves
   queued → running → done and ends with a closing receipt.
   New: [src/agent.rs#L33-L51](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/agent.rs#L33-L51), [src/agent.rs#L189-L300](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/agent.rs#L189-L301).
-  Proof: `agent_init_creates_the_job_layout_and_runs_the_features_job` (tests/features.rs).
+  Proof: `agent_init_creates_the_job_layout_and_runs_the_features_apply_job` (tests/features.rs).
+- One template per kind. custodian_kit 0.1.0's agent layout writes its own
+  `features` template to `.custodian/config/jobs/features.toml`: the
+  eligibility reading (public API, dependents, reach), which changes nothing.
+  code-passenger's job is the one that edits, so its kind is `features-apply`
+  in `features-apply.toml`, and `agent queue` takes it when no `--kind` is
+  given. Before, both wrote `features.toml`, the kit's came first, and the job
+  could not read it.
+  New: [src/agent.rs#L29-L58](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/agent.rs#L29-L58), [src/agent.rs#L337](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/agent.rs#L337).
+  Proof: the same test, which also checks the kit's `features.toml` is left as the kit wrote it.
+- custodian_kit 0.1.0's `JobFile` and `Receipt` gained fields: a queued job's
+  `job.toml` takes the rest by default, and the job-close receipt names its
+  runner, `line`.
+  New: [src/agent.rs#L158](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/agent.rs#L158), [src/agent.rs#L304](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/agent.rs#L304).
+
+- `passenger checkpoint`, and the checkpoints around `features apply`, keep
+  going past a file klepto cannot parse. Before, one such file refused the
+  whole checkpoint with `[CP0005]`. Now klepto is asked to skip it
+  (`ignore_parse_errors`); the snapshot keeps it by digest like any tracked
+  file, marked `unparsed` with the parser's message; the scan beside the
+  snapshot leaves it out; the line prints a `note:` naming it and exits 0.
+  New: [src/engine.rs#L75-L82](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/engine.rs#L75-L82), [src/passenger/types.rs#L86-L88](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/passenger/types.rs#L86-L88), [src/passenger/store.rs#L291-L295](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/passenger/store.rs#L291-L295), [src/passenger/command.rs#L44-L50](https://github.com/jameshuntt/code_passenger/blob/1d43c576a432136a681979f9ee5832d429f7ceb1/src/passenger/command.rs#L44-L50).
+  Proof: `a_checkpoint_keeps_a_file_klepto_cannot_parse_by_digest_and_says_so`
+  (tests/features.rs, fixture tests/fixtures/ws_unparsed).
 
 ### Declared lines, codes, the bin feature
 
@@ -170,7 +197,7 @@ were.
 
 ### Tests
 
-33: the 17 of 0.2.0 in tests/gate.rs, 9 in tests/features.rs on the
+34: the 17 of 0.2.0 in tests/gate.rs, 10 in tests/features.rs on the
 ws_features fixture (`store` and `app`, `log` spanning both, `logsink` the
 dependency it turns off; real cargo, offline), 3 in tests/edit.rs, 4 in the
 library (src/doc.rs, src/words.rs).
