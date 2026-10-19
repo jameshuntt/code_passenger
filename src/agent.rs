@@ -223,7 +223,7 @@ pub fn run(root: &Path, which: Option<&str>, exe: &Path) -> Result<(Closing, Pat
     jf.name = Some(name.clone());
     write_whole(&running.join("job.toml"), toml::to_string(&jf).map_err(PassengerError::toml)?.as_bytes()).map_err(custodian)?;
     let journal = store.journal().map_err(custodian)?;
-    journal.put_job(&JobRow { id: id.clone(), name: name.clone(), kind: kind.clone(), state: "running".into(), folder: rel(&store, &running), opened_utc: Some(opened.clone()), closed_utc: None }).map_err(custodian)?;
+    journal.put_job(&JobRow { id: id.clone(), name: name.clone(), kind: kind.clone(), state: "running".into(), folder: rel(&store, &running), opened_utc: Some(opened.clone()), closed_utc: None }).map_err(|e| custodian(e.into()))?;
     let in_job = InJob { id: id.clone(), readings: running.join("readings") };
     let ws_root = store.root.clone();
 
@@ -276,7 +276,7 @@ pub fn run(root: &Path, which: Option<&str>, exe: &Path) -> Result<(Closing, Pat
         std::fs::create_dir_all(p)?;
     }
     std::fs::rename(&running, &done)?;
-    journal.put_job(&JobRow { id: id.clone(), name, kind, state: "done".into(), folder: rel(&store, &done), opened_utc: Some(opened), closed_utc: Some(closing.closed_utc.clone()) }).map_err(custodian)?;
+    journal.put_job(&JobRow { id: id.clone(), name, kind, state: "done".into(), folder: rel(&store, &done), opened_utc: Some(opened), closed_utc: Some(closing.closed_utc.clone()) }).map_err(|e| custodian(e.into()))?;
     let digest = format!("sha256:{}", stable_digest::StableDigest::sha256(&json).as_str());
     let r = Receipt {
         schema: RECEIPT_SCHEMA.into(),
