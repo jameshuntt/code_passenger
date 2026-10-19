@@ -1,3 +1,5 @@
+// Copyright © 2026 1o. All rights reserved.
+
 //! `transform`: every operation of the change vocabulary applied to a copy of the fixture workspace
 //! (tests/fixtures/transform_ws: a `shop` library and an `app` that uses it), each proved by cargo over the check
 //! matrix of the crate it lands in and the crates that depend on it, its facts shown by a fresh klepto scan, written

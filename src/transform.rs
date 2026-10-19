@@ -1,3 +1,5 @@
+// Copyright © 2026 1o. All rights reserved.
+
 //! `transform --spec S [--write]`: one bounded change spec (custodian_kit's
 //! `change::ChangeSpec`) made in the code.
 //!
