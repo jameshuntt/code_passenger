@@ -2019,9 +2019,9 @@ dependencies = [
 
 [[package]]
 name = "simple_impl_derive"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb1f6f05cb62e3dec0a89c2efa2d73fe8883fea280596efdbcb23d71aedfff2d"
+checksum = "c25d768cb13e963206056cad6f018f0f0b98fdee18b3e777f9a77dcaa41a2fa7"
 dependencies = [
  "liaise_proc_macro",
  "prettyplease 0.2.37",
@@ -2031,13 +2031,14 @@ dependencies = [
  "simple_impl_core",
  "simple_impl_quote_kit",
  "syn 2.0.114",
+ "xccute_contract",
 ]
 
 [[package]]
 name = "simple_impl_quote_kit"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5aa2fa8ee642bd4d748adc0ff96d7191607b25fc9bb2d56796fee1c5a1371f7"
+checksum = "21519d0b270e6a84b4c9e6238d2f60e51724e66d752ec7ae8a2f379eba100ce2"
 dependencies = [
  "liaise_proc_macro",
  "proc-macro2",
@@ -3088,15 +3089,15 @@ dependencies = [
 
 [[package]]
 name = "xccute_contract"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81a98787b780a66b087a214ebabbf8fb503cfc018db3b19525645012b0d7de69"
+checksum = "6418fabd7e2fd44a2c0390aede884dfdf5c9945de72b34274758e5f6dd22d616"
 
 [[package]]
 name = "xccute_decisions"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa2aa08387aa90b7a492c3f7e6bd79da436e19e302a0e8745f6a1ddb38712f02"
+checksum = "c55f0ec7c799c69adc1f3759bd936a3122b9d022a86961497313d88106d7a7d9"
 dependencies = [
  "xccute_runtime",
 ]

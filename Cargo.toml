@@ -49,8 +49,8 @@ custodian_kit = { version = "0.2.0", path = "../custodian_kit" }
 # the workspace features document: 1o, its schema declared once
 core-1o = "0.1.1"
 # every command a declared line, every run decided by the executor with a receipt
-simple_impl_derive = "0.2.6"
-xccute_contract = "0.1.2"
+simple_impl_derive = "0.2.7"
+xccute_contract = "0.1.3"
 xccute_runtime = "0.1.2"
 # the .passenger store's paths, named once
 pathgen = "0.1.2"
