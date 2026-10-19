@@ -1,7 +1,7 @@
 ###
 ---
 
-### code_passenger 0.3.0 — scans a workspace with klepto, then does the writing klepto never does:
+### code_passenger 0.4.0 — scans a workspace with klepto, then does the writing klepto never does:
 ### feature gates across every crate, cargo edits, headers, reports, and the history of it all.
 
 ###
@@ -210,6 +210,44 @@ item klepto does not name in that file is refused (`[CP0063]`).
 ###
 ---
 
+### transform: a change spec made in the code (new in 0.4.0)
+
+custodian's bounded jobs write no code by hand. the agent writes a change
+spec (custodian_kit's `change::ChangeSpec`: one operation, its target, its
+boundaries, any body as simple_impl 0.1.11 toolkit pieces), custodian
+decides it in a preflight, and this line makes it.
+
+```bash
+code-passenger --root . transform --spec .custodian/data/specs/changes/config-digest.toml            # proved on a scratch copy, nothing written
+code-passenger --root . transform --spec .custodian/data/specs/changes/config-digest.toml --write --out record.json --preflight 12  # written, its record kept
+code-passenger --root . transform --revert record.json                                               # every file it wrote put back
+```
+
+every operation of custodian_kit's vocabulary is implemented here, and the
+match over them is exhaustive: `make_struct`, `make_enum`, `make_impl`,
+`add_method`, `make_fn`, `add_field`, `add_variant`, `add_derive`,
+`add_attribute`, `add_module`, `add_dependency` (through `dep add`),
+`add_test`, `add_constructor`, `add_trait_impl`, `change_signature`,
+`rename`, `move`, `extract`, `gate` and `anchor`. custodian_kit says where
+each lands and renders the text; this crate finds the exact place with syn
+(the item's span from klepto's line), and cascades where the operation says
+so: every struct literal gets a new field's default, every call a new
+parameter's argument, every resolved use a new name, a moved item a
+re-export where it was. a match without a catch-all is listed, never edited.
+
+nothing is written before it is proved. the edits are checked with cargo on a
+scratch copy, over the check matrix of the crate they land in and of every
+crate that depends on it; a fresh klepto scan of the copy must show the facts
+the operation promises. with `--write` the tree is checkpointed in the
+passenger store before and after, and the record (every file's digest before
+and after, the lines written, the checks, the postconditions) is kept.
+`passenger diff --file F` prints the lines a checkpoint pair changed, the
+lines custodian reads at a bounded job's close. a refused spec is `[CP0070]`,
+exit 2.
+
+###
+---
+
 ### every command is a declared line
 
 every command is declared once as an xccute line (simple_impl_derive), read
@@ -276,8 +314,9 @@ code-passenger patterns --root . --top 20                     # repeated code: e
 
 ### notes
 
-- klepto 0.3.1 and custodian_kit 0.1.0 come from crates.io; there are no path
-  dependencies.
+- klepto 0.3.1 and custodian_kit 0.2.0 come from crates.io (custodian_kit by
+  path too, beside it, when building from source); syn and proc-macro2, which
+  klepto builds on, find the spans `transform` splices at.
 - the cargo check runs `cargo` offline; path dependencies only, nothing is
   downloaded and nothing outside the scratch copy is touched.
 - edits inside macro bodies are out of scope; carriers klepto cannot name
