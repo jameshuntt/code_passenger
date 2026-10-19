@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.4.0 (2026-10-19)
+
+custodian's bounded jobs write no code by hand: the agent writes a change
+spec, custodian decides it in a preflight, and this release is the writer
+that makes it. Additive: nothing 0.3.0 does changes (public API: 314 items
+added, none removed, rustdoc JSON of 007fcae against 754a4c8). Every link is
+pinned to 754a4c8.
+
+### transform
+
+- `code-passenger transform --spec S [--write] [--out RECORD] [--preflight N]`
+  and `transform --revert RECORD`, a declared line like the others
+  ([src/lines.rs#L493](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/lines.rs#L493)). The spec is custodian_kit 0.2.0's
+  `change::ChangeSpec`; where it lands is the kit's `change::landing`, the
+  same rule the preflight reads, and the text written is the kit's rendering
+  (bodies as simple_impl 0.1.11 toolkit lines, whole functions and trait
+  impls from its generators). This crate finds the exact place with syn (the
+  item's span from klepto's line, [src/transform.rs#L205](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/transform.rs#L205)) and plans each
+  operation ([src/transform.rs#L399](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/transform.rs#L399)). The match over the kit's 20
+  operations is exhaustive, so a word with no implementation does not
+  compile; `every_operation_of_the_vocabulary_has_its_test_here`
+  ([tests/transform.rs#L239](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L239)) holds that each has a test.
+- Cascades, where the operation says so: a new field's default goes into
+  every struct literal klepto resolves, across crates
+  (`add_field_with_a_default_fills_every_struct_literal_across_crates`,
+  [tests/transform.rs#L146](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L146)); a new parameter's argument into every call
+  (`change_signature_passes_the_new_argument_at_every_call_and_rename_follows_every_use`,
+  [tests/transform.rs#L211](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L211)); a moved item keeps its old path through a
+  re-export (`move_and_extract_keep_the_old_paths_through_a_re_export`,
+  [tests/transform.rs#L224](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L224)). A match without a catch-all is listed and
+  never edited (`add_variant_lists_the_match_it_breaks_and_writes_nothing_unproved`,
+  [tests/transform.rs#L158](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L158)).
+- Nothing is written before it is proved ([src/transform.rs#L926](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/transform.rs#L926)): the
+  edits are checked by cargo on a scratch copy over klepto's check matrix of
+  the crate they land in and of every crate depending on it, and a fresh
+  klepto scan of the copy must show the facts the operation promises
+  ([src/transform.rs#L880](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/transform.rs#L880)). With `--write` the tree is checkpointed in
+  the passenger store before and after and the record (custodian_kit's
+  `transform::TransformRecord`) is kept; `--revert` puts every file back
+  ([src/transform.rs#L1060](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/transform.rs#L1060)). `make_struct_writes_the_declaration_and_revert_puts_the_file_back`
+  ([tests/transform.rs#L39](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L39)); a body of toolkit pieces compiles and its
+  declared test passes: `a_method_whose_body_is_toolkit_pieces_compiles_and_its_declared_test_passes`
+  ([tests/transform.rs#L71](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/tests/transform.rs#L71)).
+- A refused spec is `[CP0070]`, exit 2 ([src/error.rs#L80](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/error.rs#L80)).
+- `passenger diff --file F` prints the lines a file changed between two
+  checkpoints, `lines: n,n` ([src/passenger/command.rs#L80](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/passenger/command.rs#L80)): the lines a
+  bounded job's close reads.
+- `add_dependency` runs through `dep add`'s own plan
+  ([src/commands/edit.rs#L141](https://github.com/jameshuntt/code_passenger/blob/754a4c8e78ff03ccea6b05aae32971dd787de1e8/src/commands/edit.rs#L141)).
+
+### the rest
+
+- custodian_kit 0.2.0; syn and proc-macro2 (`span-locations`), which klepto
+  builds on; simple_impl 0.1.11 as a dev-dependency, so the tests compile the
+  toolkit lines a spec renders. simple_impl_derive 0.2.7, xccute_contract
+  0.1.3.
+- Every new file carries the notice Copyright © 2026 1o. All rights
+  reserved.; the existing notices are as they were.
+- 47 tests: 12 in tests/transform.rs, and 0.3.0's.
+
 ## 0.3.0 (2026-10-19)
 
 0.2.0 planned one package at a time from a klepto.toml spec. 0.3.0 plans a
