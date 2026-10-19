@@ -130,6 +130,15 @@ fn plain_version(item: &toml_edit::Item) -> bool {
 
 /// `dep add`.
 pub fn dep_add(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>, features: &[String], workspace_table: bool) -> Result<Edited> {
+    let e = dep_add_plan(root, krate, spec, path_dep, features, workspace_table)?;
+    if e.written {
+        e.edits.write()?;
+    }
+    Ok(e)
+}
+
+/// `dep add`'s edits, not written (`written` says whether there are any): what a transform proves before it writes.
+pub fn dep_add_plan(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>, features: &[String], workspace_table: bool) -> Result<Edited> {
     let root = workspace_root(root)?;
     let (name, version) = split_spec(spec);
     if name.is_empty() {
@@ -177,9 +186,6 @@ pub fn dep_add(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>, fea
         }
         let edits = EditSet { files, manifest: None };
         let written = !edits.is_empty();
-        if written {
-            edits.write()?;
-        }
         let said = if written { format!("added {name} to {krate} through [workspace.dependencies]") } else { format!("{name} is already in {krate} through [workspace.dependencies]: nothing to do") };
         return Ok(Edited { root, edits, written, said });
     }
@@ -209,7 +215,9 @@ pub fn dep_add(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>, fea
         (false, true) => format!("added {name} to {krate}"),
         (true, true) => format!("updated {name} in {krate}"),
     };
-    finish(&root, manifest, before, after, said)
+    let edits = EditSet { files: vec![FileEdit { path: manifest, before, after }], manifest: None };
+    let written = !edits.is_empty();
+    Ok(Edited { root, edits, written, said })
 }
 
 /// Whether a feature list names `dep` (`dep:x`, `x/f`, `x?/f`, `x`).

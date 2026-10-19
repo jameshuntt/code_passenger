@@ -14,6 +14,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # crates this one depends on by path; CI clones them next to it (every other crate is from crates.io)
+  SIBLINGS: custodian_kit
+  ORG: 1o-llc
 
 jobs:
   test:
@@ -25,6 +28,15 @@ jobs:
         rust: [stable, "1.90"]
     steps:
       - uses: actions/checkout@v6
+      - name: Clone the sibling crates this one builds against (../<name>)
+        # the same branch when a sibling has one, so a change across crates is tested together
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          for s in $SIBLINGS; do
+            git clone --depth 1 --branch "$branch" "https://github.com/$ORG/$s.git" "../$s" 2>/dev/null \
+              || git clone --depth 1 "https://github.com/$ORG/$s.git" "../$s"
+            echo "$s: $(git -C "../$s" rev-parse --abbrev-ref HEAD) $(git -C "../$s" rev-parse --short HEAD)"
+          done
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -36,6 +48,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Clone the sibling crates this one builds against (../<name>)
+        # the same branch when a sibling has one, so a change across crates is tested together
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          for s in $SIBLINGS; do
+            git clone --depth 1 --branch "$branch" "https://github.com/$ORG/$s.git" "../$s" 2>/dev/null \
+              || git clone --depth 1 "https://github.com/$ORG/$s.git" "../$s"
+            echo "$s: $(git -C "../$s" rev-parse --abbrev-ref HEAD) $(git -C "../$s" rev-parse --short HEAD)"
+          done
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -52,6 +73,15 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+      - name: Clone the sibling crates this one builds against (../<name>)
+        # the same branch when a sibling has one, so a change across crates is tested together
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          for s in $SIBLINGS; do
+            git clone --depth 1 --branch "$branch" "https://github.com/$ORG/$s.git" "../$s" 2>/dev/null \
+              || git clone --depth 1 "https://github.com/$ORG/$s.git" "../$s"
+            echo "$s: $(git -C "../$s" rev-parse --abbrev-ref HEAD) $(git -C "../$s" rev-parse --short HEAD)"
+          done
       - uses: dtolnay/rust-toolchain@stable
       - name: Is this version already on crates.io?
         id: check

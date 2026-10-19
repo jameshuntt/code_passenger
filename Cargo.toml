@@ -45,7 +45,7 @@ tempfile = "3.19.1"
 # the one extractor
 klepto = "0.3.1"
 # jobs as folders, the journal and its receipts (agent mode); the scope depth of what a feature turns off
-custodian_kit = "0.1.0"
+custodian_kit = { version = "0.2.0", path = "../custodian_kit" }
 # the workspace features document: 1o, its schema declared once
 core-1o = "0.1.1"
 # every command a declared line, every run decided by the executor with a receipt
@@ -58,8 +58,15 @@ pathgen = "0.1.2"
 liaise = "0.2.4"
 # every digest
 stable_digest = "0.1.1"
+# transform: syn reads the file where a change lands (spans with their lines), a new file is materialized from the
+# spec's fields
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+file_recipe = "0.1.1"
 # the plan flags as one word, its rules checked
 big-bad-bool = "0.1.1"
 flaga_solver = "0.1.1"
 
 [dev-dependencies]
+# the transform tests apply bodies of toolkit pieces to a fixture crate, which cargo then builds offline from the registry
+simple_impl = "0.1.11"

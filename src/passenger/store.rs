@@ -427,6 +427,11 @@ impl PassengerStore {
         write_bytes_atomic(&p, &compressed)
     }
 
+    /// A blob by its digest (lowercase sha256 hex of its bytes), as a snapshot stored it.
+    pub fn object(&self, hash: &str) -> Result<Vec<u8>> {
+        self.read_object(hash)
+    }
+
     fn read_object(&self, hash: &str) -> Result<Vec<u8>> {
         let compressed = fs::read(self.object_path(hash)?)?;
         Ok(zstd::decode_all(&compressed[..])?)

@@ -63,6 +63,22 @@ pub fn run(l: &PassengerRooted<CodePassenger>, root: &Path, out: &mut String) ->
                 cur = c.parents.first().cloned();
             }
         }
+        "diff" => {
+            // the lines of FILE that differ from the blob --from names: what a bounded job's close lists by line
+            let s = PassengerStore::open(root)?;
+            let from = os(&l.from).ok_or_else(|| PassengerError::Line { detail: "passenger diff --from SHA256 --file FILE".into() })?;
+            let file = os(&l.file).ok_or_else(|| PassengerError::Line { detail: "passenger diff --from SHA256 --file FILE".into() })?;
+            let old = String::from_utf8(s.object(from.trim_start_matches("sha256:"))?).unwrap_or_default();
+            let now = std::fs::read_to_string(s.root.join(&file)).unwrap_or_default();
+            let d = similar::TextDiff::from_lines(&old, &now);
+            let mut lines = Vec::new();
+            for op in d.ops() {
+                if !matches!(op.tag(), similar::DiffTag::Equal) {
+                    lines.extend(op.new_range().map(|n| n + 1));
+                }
+            }
+            out.push_str(&format!("lines: {}\n", lines.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
+        }
         other => return Err(PassengerError::Line { detail: format!("passenger {other}") }),
     }
     Ok(0)

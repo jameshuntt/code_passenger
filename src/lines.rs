@@ -47,6 +47,7 @@ pub const JOB_ENV: &str = "CODE_PASSENGER_JOB";
 #[composite(command = "agent", ty = Agent, init = "action")]
 #[composite(command = "dep", ty = Dep, init = "action,krate,dep")]
 #[composite(command = "attr", ty = Attr, init = "action,file,item,line")]
+#[composite(command = "transform", ty = Transform)]
 pub struct CodePassenger;
 
 /// `code-passenger --root ROOT WORD...`: a line whose root comes first, as
@@ -82,7 +83,7 @@ fn features_action(field: &str, word: &OsStr) -> CommandValidationResult {
 }
 
 fn passenger_action(field: &str, word: &OsStr) -> CommandValidationResult {
-    word_of(field, word, &["init", "branch", "checkout", "checkpoint", "log"])
+    word_of(field, word, &["init", "branch", "checkout", "checkpoint", "log", "diff"])
 }
 
 fn agent_action(field: &str, word: &OsStr) -> CommandValidationResult {
@@ -209,6 +210,10 @@ pub struct Passenger {
     pub no_artifacts: bool,
     #[arg(flag = "--force")]
     pub force: bool,
+    /// The file `diff` compares with the blob `--from` names.
+    #[builder(into)]
+    #[arg(kv = "--file")]
+    pub file: Option<OsString>,
 }
 
 /// `gate --spec S [--root R] [--package P] [--write] [--check] [--max-rounds N] [--no-cargo] [--unproven] [--json]`:
@@ -476,6 +481,51 @@ pub struct Attr {
     pub line: OsString,
 }
 
+/// `transform --spec S [--root R] [--write] [--no-cargo] [--unproven] [--out FILE] [--preflight N] [--revert RECORD]`:
+/// one change spec, proved by cargo on a scratch copy and a fresh scan, written with `--write` (passenger checkpoints
+/// before and after, a record of every file), or a record's files put back (`--revert`).
+#[allow(clippy::duplicated_attributes)]
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "transform")]
+#[exit_status(code = 0, word = "proved, and written with --write")]
+#[exit_status(code = 1, word = "not proved: nothing written")]
+#[exit_status(code = 2, word = "refused")]
+pub struct Transform {
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+    /// The change spec (custodian_kit's `change` document, 1o or TOML).
+    #[builder(into)]
+    #[arg(kv = "--spec")]
+    pub spec: Option<OsString>,
+    #[arg(flag = "--write")]
+    pub write: bool,
+    #[arg(flag = "--no-cargo")]
+    pub no_cargo: bool,
+    #[arg(flag = "--unproven")]
+    pub unproven: bool,
+    /// Where the record goes.
+    #[builder(into)]
+    #[arg(kv = "--out")]
+    pub out: Option<OsString>,
+    /// The preflight receipt it runs on.
+    #[builder(into)]
+    #[arg(kv = "--preflight")]
+    pub preflight: Option<OsString>,
+    /// A record whose files are put back.
+    #[builder(into)]
+    #[arg(kv = "--revert")]
+    pub revert: Option<OsString>,
+}
+
+fn transform_valid(line: &Transform) -> CommandValidationResult {
+    match (&line.spec, &line.revert) {
+        (Some(_), Some(_)) => Err(CommandValidationError::structural("--spec or --revert, not both").with_field("revert")),
+        (None, None) => Err(CommandValidationError::structural("transform needs --spec or --revert").with_field("spec")),
+        _ => Ok(()),
+    }
+}
+
 /// cargo, as the oracle runs it.
 #[derive(CompositeShell, Debug, Clone, Copy, Default)]
 #[shell(program = "cargo")]
@@ -548,6 +598,7 @@ leaves! {
     Agent => AgentRooted,
     Dep => DepRooted,
     Attr => AttrRooted,
+    Transform => TransformRooted,
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +673,7 @@ pub enum Line {
     Agent(AgentRooted<CodePassenger>),
     Dep(DepRooted<CodePassenger>),
     Attr(AttrRooted<CodePassenger>),
+    Transform(TransformRooted<CodePassenger>),
 }
 
 macro_rules! each_line {
@@ -643,6 +695,7 @@ macro_rules! each_line {
             Line::Agent($l) => $body,
             Line::Dep($l) => $body,
             Line::Attr($l) => $body,
+            Line::Transform($l) => $body,
         }
     };
 }
@@ -666,6 +719,7 @@ impl Line {
             Line::Agent(_) => "agent",
             Line::Dep(_) => "dep",
             Line::Attr(_) => "attr",
+            Line::Transform(_) => "transform",
         }
     }
 
@@ -705,6 +759,7 @@ impl Line {
             Line::Agent(l) => Line::Agent(l.root(root)),
             Line::Dep(l) => Line::Dep(l.root(root)),
             Line::Attr(l) => Line::Attr(l.root(root)),
+            Line::Transform(l) => Line::Transform(l.root(root)),
         }
     }
 }
@@ -740,7 +795,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
         at.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
         return Ok(line.with_root(root));
     }
-    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr".into() })?;
+    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform".into() })?;
     let line = match *cmd {
         "scan" => {
             let w = Words::read(rest, &["--json"], &["--root", "--src"])?;
@@ -776,7 +831,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             Line::Scaffold(l)
         }
         "passenger" => {
-            let w = Words::read(rest, &["--no-artifacts", "--force"], &["--root", "--from", "--note", "--branch", "--n"])?;
+            let w = Words::read(rest, &["--no-artifacts", "--force"], &["--root", "--from", "--note", "--branch", "--n", "--file"])?;
             let mut p = w.positionals(3, "passenger ACTION [NAME]")?;
             // 0.2.0 spelled a new branch `branch create NAME`
             if p.first().map(String::as_str) == Some("branch") && p.get(1).map(String::as_str) == Some("create") {
@@ -795,6 +850,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             opt!(l, w, "--note", note);
             opt!(l, w, "--branch", branch);
             opt!(l, w, "--n", n);
+            opt!(l, w, "--file", file);
             flag!(l, w, "--no-artifacts", no_artifacts);
             flag!(l, w, "--force", force);
             Line::Passenger(l)
@@ -928,6 +984,21 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             let mut l = CodePassenger::attr(action.as_str(), need("--file")?, need("--item")?, need("--line")?);
             opt!(l, w, "--root", root);
             Line::Attr(l)
+        }
+        "transform" => {
+            let w = Words::read(rest, &["--write", "--no-cargo", "--unproven"], &["--root", "--spec", "--out", "--preflight", "--revert"])?;
+            w.positionals(0, "transform")?;
+            let mut l = CodePassenger::transform();
+            opt!(l, w, "--root", root);
+            opt!(l, w, "--spec", spec);
+            flag!(l, w, "--write", write);
+            flag!(l, w, "--no-cargo", no_cargo);
+            flag!(l, w, "--unproven", unproven);
+            opt!(l, w, "--out", out);
+            opt!(l, w, "--preflight", preflight);
+            opt!(l, w, "--revert", revert);
+            transform_valid(l.leaf()).map_err(|e| PassengerError::Line { detail: e.to_string() })?;
+            Line::Transform(l)
         }
         other => return Err(PassengerError::Line { detail: format!("`{other}` is not a command") }),
     };
@@ -1129,6 +1200,32 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
             out.push_str(&e.render());
             outputs.extend(e.edits.files.iter().filter(|f| f.before != f.after).map(|f| f.path.clone()));
             0
+        }
+        Line::Transform(l) => {
+            let l = l.leaf();
+            let o = match os(&l.revert) {
+                Some(r) => crate::transform::revert(&root, Path::new(&r))?,
+                None => {
+                    if l.write && l.no_cargo && !l.unproven {
+                        return Err(PassengerError::Unproven);
+                    }
+                    let opts = crate::transform::Options {
+                        spec: PathBuf::from(os(&l.spec).unwrap_or_default()),
+                        write: l.write,
+                        no_cargo: l.no_cargo,
+                        unproven: l.unproven,
+                        out: os(&l.out).map(PathBuf::from),
+                        preflight: os(&l.preflight).and_then(|p| p.parse().ok()),
+                    };
+                    crate::transform::run(&root, &opts)?
+                }
+            };
+            out.push_str(&crate::transform::render(&o));
+            if o.record.written {
+                outputs.extend(o.record.files.iter().map(|f| o.root.join(&f.path)));
+            }
+            outputs.extend(o.record_file.clone());
+            o.exit_code
         }
     };
     Ok((code, out, outputs))

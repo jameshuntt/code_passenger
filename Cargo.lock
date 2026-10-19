@@ -385,16 +385,20 @@ dependencies = [
  "chrono",
  "core-1o",
  "custodian_kit",
+ "file_recipe",
  "flaga_solver",
  "im",
  "klepto",
  "liaise",
  "pathgen",
+ "proc-macro2",
  "serde",
  "serde_json",
  "similar",
+ "simple_impl",
  "simple_impl_derive",
  "stable_digest",
+ "syn 2.0.114",
  "tempfile",
  "toml 0.8.23",
  "toml_edit",
@@ -515,9 +519,7 @@ dependencies = [
 
 [[package]]
 name = "custodian_kit"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7e87f46d541a19ea8c008875c468183beffc48f597e19e026965ce2690cc24a"
+version = "0.2.0"
 dependencies = [
  "big-bad-bool",
  "bundles",
@@ -739,6 +741,12 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
+name = "file_recipe"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5231e0bf32b9decb3aafd08a6c556c4c40b35253b03de2544efd6a01bfeffdce"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1980,9 +1988,9 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "simple_impl"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6bf798c82bbf2e27992cfc62a2b8461be04c5972b54beafb7ac03810a0dca39"
+checksum = "f3e73baf85ccf92fe0b3da7467f7860ce4e02fce8bdf1aa815774b9429b1d9dc"
 
 [[package]]
 name = "simple_impl_attr_kit"

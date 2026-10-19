@@ -75,6 +75,10 @@ pub enum PassengerError {
     #[liaise(code = 64, msg = "the line is not one attribute on one line (#[...]): {detail}")]
     AttrLine { detail: String },
 
+    // transform (exit 2)
+    #[liaise(code = 70, msg = "the change spec cannot be made as it is: {detail}")]
+    TransformRefused { detail: String },
+
     // agent mode, through custodian_kit
     #[liaise(code = 50, msg = "custodian_kit refused: {detail}")]
     Custodian { detail: String },
@@ -103,7 +107,8 @@ impl PassengerError {
             | PassengerError::NoWorkspaceTable { .. }
             | PassengerError::DepInUse { .. }
             | PassengerError::AttrItem { .. }
-            | PassengerError::AttrLine { .. } => 2,
+            | PassengerError::AttrLine { .. }
+            | PassengerError::TransformRefused { .. } => 2,
             _ => 1,
         }
     }
