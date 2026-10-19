@@ -74,7 +74,7 @@ were.
   `[CP0021]` unless `--unproven` says so. The plan flags are one big-bad-bool
   word whose rules flaga_solver checks.
   Old: [src/commands/gate.rs#L84-L91](https://github.com/jameshuntt/code_passenger/blob/2b77ad8c7477f9ccc66fb804827f0d667968a896/src/commands/gate.rs#L84-L91).
-  New: [src/words.rs#L11-L58](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/words.rs#L11-L58).
+  New: [src/words.rs#L11-L53](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/words.rs#L11-L58).
   Proof: `the_words_rules` (src/words.rs), `refusals_carry_their_codes` (tests/features.rs).
 
 ### Depth and the unavailable list
@@ -163,7 +163,7 @@ were.
   New: [src/error.rs#L12-L83](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/error.rs#L12-L84).
 - `dep add | remove` and `attr place | remove`, the writers custodian routes
   to. `attr` places by the gates' rule, now one function both use.
-  New: [src/commands/edit.rs#L132-L284](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/commands/edit.rs#L132-L233),
+  New: [src/commands/edit.rs#L132-L281](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/commands/edit.rs#L132-L233),
   [src/commands/edit.rs#L337-L394](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/commands/edit.rs#L337-L394),
   [src/gate.rs#L173-L208](https://github.com/jameshuntt/code_passenger/blob/4f3ab7d1873159da157fbd9c2c588bcef0d6f568/src/gate.rs#L173-L210).
   Proof: tests/edit.rs (exact manifests, exact placements, the lines).
