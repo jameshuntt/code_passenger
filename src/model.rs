@@ -2,7 +2,7 @@ use klepto::{UseSite, UseSitesCount};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ManifestInfo {
     pub crate_name: String,
     /// feature -> raw members (strings) as in Cargo.toml
@@ -17,10 +17,17 @@ pub struct ManifestInfo {
     pub dep_features: BTreeMap<String, BTreeSet<String>>,
 }
 
+impl ManifestInfo {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentDetails {
     pub filename: String,
-    /// path relative to src root (e.g. "net/http.rs")
+    /// path relative to the scanned directory (`src/net/http.rs` from a
+    /// package root, `app/src/lib.rs` from a workspace root)
     pub relative_path: String,
 }
 
@@ -46,39 +53,13 @@ pub struct FileReport {
     pub notes: Vec<FeatureNote>,
     pub corpus_features: Vec<String>,
 
-    // NEW
-    // pub use_sites: Vec<UseSite>,
-    // pub external_use_sites: UseSites,
     pub external_use_sites: Vec<UseSite>,
-    // pub internal_use_sites: UseSites,
     pub internal_use_sites: Vec<UseSite>,
 
     pub external_dep_symbol_counts: UseSitesCount,
     pub internal_dep_symbol_counts: UseSitesCount,
 
 }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct FileReport {
-//     pub document: DocumentDetails,
-//     pub used: UsedSymbols,
-//     pub notes: Vec<FeatureNote>,
-//     pub corpus_features: Vec<String>,
-// 
-//     // NEW:
-//     pub use_sites: Vec<UseSite>,
-// 
-//     // NEW: dep -> symbol(head) -> count
-//     pub dep_symbol_counts: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct FileReport {
-//     pub document: DocumentDetails,
-//     pub used: UsedSymbols,
-//     pub notes: Vec<FeatureNote>,
-//     pub corpus_features: Vec<String>,
-// }
 
 #[derive(Debug, Clone, Copy)]
 pub enum PlanSection {

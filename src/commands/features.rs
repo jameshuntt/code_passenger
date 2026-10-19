@@ -1,10 +1,11 @@
 //! `feature-map`, `feature-sites`, `feature-probe` (rules F1–F3 in
 //! `GATE_RULES.md`): the 42-step lineage's review surface on klepto facts.
 
-use crate::commands::{crate_name_guess, klepto_for};
+use crate::commands::klepto_for;
 use crate::error::{PassengerError, Result};
 use crate::gate::relative;
 use klepto::graph::NodeKind;
+use crate::cargo::enable_text;
 use klepto::{CfgPredicate, DepKind, FeatureEnable, FeatureModel, FeatureSpec, GateReason, Implication, Klepto, Receipt};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -111,14 +112,6 @@ fn cfg_text(p: &CfgPredicate) -> String {
     if *p == CfgPredicate::True { "true".into() } else { p.render() }
 }
 
-fn enable_text(e: &FeatureEnable) -> String {
-    match e {
-        FeatureEnable::Feature(f) => f.clone(),
-        FeatureEnable::Dep(d) => format!("dep:{d}"),
-        FeatureEnable::DepFeature { dep, feature, weak } => format!("{dep}{}/{feature}", if *weak { "?" } else { "" }),
-    }
-}
-
 fn dep_kind_text(k: DepKind) -> &'static str {
     match k {
         DepKind::Normal => "normal",
@@ -198,7 +191,7 @@ fn root_text(root: &Path) -> String {
 
 /// Rule F1.
 pub fn feature_map(root: &Path, package: Option<&str>) -> Result<FeatureMap> {
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     let receipt = Receipt::from_klepto(&k);
     let ungated = k.ungated_dep_uses();
     let mut packages = Vec::new();
@@ -233,7 +226,7 @@ pub fn feature_map(root: &Path, package: Option<&str>) -> Result<FeatureMap> {
 
 /// Rule F2.
 pub fn feature_sites(root: &Path, package: Option<&str>, target: &str) -> Result<FeatureSites> {
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     let (kind, deps, owners) = classify(&k, package, target)?;
     let receipt = Receipt::from_klepto(&k);
     let mut by_file: BTreeMap<String, Vec<SiteRow>> = BTreeMap::new();
@@ -260,7 +253,7 @@ pub fn feature_sites(root: &Path, package: Option<&str>, target: &str) -> Result
 
 /// Rule F3.
 pub fn feature_probe(root: &Path, package: Option<&str>, target: &str, spec: Option<&Path>) -> Result<FeatureProbe> {
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     let (kind, deps, owners) = classify(&k, package, target)?;
     let receipt = Receipt::from_klepto(&k);
     let spec_model = match spec {

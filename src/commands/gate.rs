@@ -1,6 +1,6 @@
 //! `gate` (rules G1–G7, X in `GATE_RULES.md`).
 
-use crate::commands::{crate_name_guess, klepto_for, resolve_package};
+use crate::commands::{klepto_for, resolve_package};
 use crate::error::{PassengerError, Result};
 use crate::gate::{apply, relative, EditSet};
 use crate::oracle::CargoOracle;
@@ -41,7 +41,7 @@ pub struct GateOutcome {
 /// Rule G2.
 pub fn plan(root: &Path, package: Option<&str>, spec: &Path) -> Result<(Klepto, Planned)> {
     let spec = FeatureSpec::from_path(spec).map_err(|e| PassengerError::Unsupported(e.to_string()))?;
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     let package = resolve_package(&k, root, package)?;
     let current = k
         .feature_model(&package)

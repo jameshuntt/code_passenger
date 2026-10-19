@@ -1,7 +1,3 @@
-
-
-
-
 pub(super) fn to_type_name(snake: &str) -> String {
     let mut out = String::new();
     let mut up = true;
@@ -11,8 +7,4 @@ pub(super) fn to_type_name(snake: &str) -> String {
         else { out.push(c); }
     }
     if out.is_empty() { "Thing".into() } else { out }
-}
-
-pub(super) fn norm_ident(s: &str) -> String {
-    s.replace('-', "_")
 }

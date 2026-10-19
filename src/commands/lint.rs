@@ -1,6 +1,6 @@
 //! `lint` (rule R2 in `GATE_RULES.md`).
 
-use crate::commands::{crate_name_guess, klepto_for};
+use crate::commands::klepto_for;
 use crate::error::{PassengerError, Result};
 use klepto::{run_pipeline, Policy, Verdict};
 use std::path::Path;
@@ -15,6 +15,6 @@ pub fn run(root: &Path, policy: Option<&Path>) -> Result<Verdict> {
         None => DEFAULT_POLICY.to_string(),
     };
     let policy = Policy::parse(&text).map_err(|e| PassengerError::Unsupported(e.to_string()))?;
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     Ok(run_pipeline(&k, &policy))
 }

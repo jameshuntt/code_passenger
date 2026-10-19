@@ -1,6 +1,6 @@
 //! `receipt` (rule R1 in `GATE_RULES.md`).
 
-use crate::commands::{crate_name_guess, klepto_for};
+use crate::commands::klepto_for;
 use crate::error::Result;
 use klepto::receipt::kg;
 use klepto::Receipt;
@@ -15,7 +15,7 @@ pub struct Written {
 
 /// Rule R1.
 pub fn write(root: &Path, out: &Path, kg_dir: Option<&Path>) -> Result<Written> {
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     let receipt = Receipt::from_klepto(&k);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;

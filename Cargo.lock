@@ -255,7 +255,6 @@ dependencies = [
  "hex",
  "im",
  "klepto",
- "regex",
  "serde",
  "serde_json",
  "sha2",

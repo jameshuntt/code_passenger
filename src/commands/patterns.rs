@@ -1,13 +1,13 @@
 //! `patterns` (rule R3 in `GATE_RULES.md`).
 
-use crate::commands::{crate_name_guess, klepto_for};
+use crate::commands::klepto_for;
 use crate::error::Result;
 use klepto::{patterns, MiningOptions, PatternReport};
 use std::path::Path;
 
 /// Rule R3.
 pub fn run(root: &Path, options: &MiningOptions) -> Result<PatternReport> {
-    let k = klepto_for(root, &crate_name_guess(root))?;
+    let k = klepto_for(root)?;
     Ok(patterns::mine(&k, options))
 }
 

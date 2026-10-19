@@ -103,32 +103,23 @@ fn skip_dir(name: &OsStr) -> bool {
     name == "target" || name == ".git" || name == ".passenger"
 }
 
-/// Rule A2: the manifest of `package` under `root` — the `Cargo.toml`
-/// whose `[package].name` (normalised) is the package.
+/// Rule A2: the manifest of `package` in the workspace at `root`, as cargo
+/// metadata names it (klepto's `PackageInfo::manifest_path`).
 pub fn find_manifest(root: &Path, package: &str) -> Result<PathBuf> {
-    let want = package.replace('-', "_");
-    let mut found: Vec<PathBuf> = Vec::new();
-    let walk = WalkDir::new(root).into_iter().filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && skip_dir(e.file_name())));
-    for entry in walk.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() || entry.file_name() != "Cargo.toml" {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
-        let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { continue };
-        let name = doc.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()).map(|s| s.replace('-', "_"));
-        if name.as_deref() == Some(want.as_str()) {
-            found.push(entry.path().to_path_buf());
-        }
-    }
-    found.sort();
-    found
-        .into_iter()
-        .next()
-        .ok_or_else(|| PassengerError::Unsupported(format!("no Cargo.toml with [package].name = \"{package}\" under {}", root.display())))
+    let b = crate::cargo::builder(root)?;
+    crate::cargo::manifest_of(b.packages(), package)
+        .ok_or_else(|| PassengerError::Unsupported(format!("no workspace member named `{package}` under {}", root.display())))
 }
 
 /// Rules A1–A2.
 pub fn apply(root: &Path, plan: &GatePlan) -> Result<EditSet> {
+    let manifest = if plan.manifest.is_empty() { None } else { Some(find_manifest(root, &plan.package)?) };
+    apply_with(plan, manifest.as_deref())
+}
+
+/// Rules A1–A2 with the package's manifest already known (`None` when the
+/// plan edits none).
+pub fn apply_with(plan: &GatePlan, manifest: Option<&Path>) -> Result<EditSet> {
     let mut by_file: BTreeMap<PathBuf, Vec<&GateEdit>> = BTreeMap::new();
     for g in &plan.gates {
         by_file.entry(g.location.path.clone()).or_default().push(g);
@@ -139,13 +130,14 @@ pub fn apply(root: &Path, plan: &GatePlan) -> Result<EditSet> {
         let after = gate_file(&before, &mut gates);
         files.push(FileEdit { path, before, after });
     }
-    let manifest = if plan.manifest.is_empty() {
-        None
-    } else {
-        let path = find_manifest(root, &plan.package)?;
-        let before = std::fs::read_to_string(&path)?;
-        let after = edit_manifest(&before, &plan.manifest)?;
-        Some(FileEdit { path, before, after })
+    let manifest = match (plan.manifest.is_empty(), manifest) {
+        (true, _) => None,
+        (false, None) => return Err(PassengerError::Unsupported(format!("the plan edits the manifest of `{}`, and none is known", plan.package))),
+        (false, Some(path)) => {
+            let before = std::fs::read_to_string(path)?;
+            let after = edit_manifest(&before, &plan.manifest)?;
+            Some(FileEdit { path: path.to_path_buf(), before, after })
+        }
     };
     Ok(EditSet { files, manifest })
 }
