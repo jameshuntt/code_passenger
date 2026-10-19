@@ -2,7 +2,8 @@
 
 use crate::commands::{crate_name_guess, klepto_for};
 use crate::error::Result;
-use klepto::{kg, Receipt};
+use klepto::receipt::kg;
+use klepto::Receipt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]

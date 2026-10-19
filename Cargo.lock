@@ -479,9 +479,7 @@ dependencies = [
 
 [[package]]
 name = "klepto"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70371bd80d5ee52161547872ad77f35e17a559c35af51106e17efff90db9395"
+version = "0.3.1"
 dependencies = [
  "blake3",
  "cargo_metadata",
