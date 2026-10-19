@@ -42,7 +42,7 @@ similar = "2.6"
 tempfile = "3.19.1"
 
 # the one extractor
-klepto = { version = "0.3.1", path = "../klepto" }
+klepto = "0.3.1"
 # jobs as folders, the journal and its receipts (agent mode); the scope depth of what a feature turns off
 custodian_kit = { version = "0.1.0", path = "../custodian_kit" }
 # the workspace features document: 1o, its schema declared once

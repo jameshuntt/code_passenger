@@ -210,6 +210,8 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bundles"
 version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3da29ffff470f372009d61142162d8c712cebbc5644d350b859269efaa2dff2f"
 dependencies = [
  "pathgen",
  "regex",
@@ -385,7 +387,7 @@ dependencies = [
  "custodian_kit",
  "flaga_solver",
  "im",
- "klepto 0.3.1",
+ "klepto",
  "liaise",
  "pathgen",
  "serde",
@@ -522,18 +524,20 @@ dependencies = [
  "core-1o",
  "flaga_solver",
  "globset",
- "klepto 0.3.1",
+ "klepto",
  "liaise",
  "maintenance",
  "pathgen",
  "quote",
  "rusqlite",
+ "scope",
  "serde",
  "serde_json",
  "simple_impl_derive",
  "stable_digest",
  "syn 2.0.114",
  "tantivy",
+ "task_history",
  "thiserror 1.0.69",
  "tokei",
  "toml 0.8.23",
@@ -814,6 +818,21 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "generator"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1be81b31c9ce4caf7f3178eeb90662bb1864d3ad363ec6bdada3201adff19c37"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result",
 ]
 
 [[package]]
@@ -1111,28 +1130,9 @@ dependencies = [
 
 [[package]]
 name = "klepto"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "512d37af177b84a22bb041d431cc162b90e6a78817225524381b7f6ab2a28edb"
-dependencies = [
- "blake3",
- "cargo_metadata",
- "globset",
- "proc-macro2",
- "quote",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "syn 2.0.114",
- "thiserror 1.0.69",
- "toml 0.8.23",
- "walkdir",
-]
-
-[[package]]
-name = "klepto"
 version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a26fd3450a52944152bf1d83161c6fa16a81622f8db41cefc12b1a669094fb9"
 dependencies = [
  "blake3",
  "cargo_metadata",
@@ -1239,6 +1239,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1269,10 +1282,12 @@ checksum = "7ef0d4ed8669f8f8826eb00dc878084aa8f253506c4fd5e8f58f5bce72ddb97e"
 [[package]]
 name = "maintenance"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d5831c2137780efbf2da450f05b4fc731593cc4c9dc2e4fbaa16a3648a10318"
 dependencies = [
  "globset",
  "inventory",
- "klepto 0.3.0",
+ "klepto",
  "liaise_proc_macro",
  "maintenance_core",
  "maintenance_macros",
@@ -1290,6 +1305,8 @@ dependencies = [
 [[package]]
 name = "maintenance_core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b9bba0c409a1e766457b071da57a02d4ef772fb55fdb8635daf0fbd2a3874f5"
 dependencies = [
  "big-bad-bool",
  "liaise_proc_macro",
@@ -1304,6 +1321,8 @@ dependencies = [
 [[package]]
 name = "maintenance_macros"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff258e69ac7ad60d0f08841ad50717db655d39fc37c5f11ac9519487554aebeb"
 dependencies = [
  "liaise_proc_macro",
  "maintenance_core",
@@ -1311,6 +1330,15 @@ dependencies = [
  "quote",
  "simple_impl_attr_kit",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
 ]
 
 [[package]]
@@ -1363,6 +1391,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1798,6 +1835,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "scope"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ebc6a35c10cc6b0f9434cc1ad44819e466995b6bd7389d868a6f266b8201d6d"
+dependencies = [
+ "loom",
+ "waker_tables",
+]
+
+[[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1894,6 +1947,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -2255,6 +2317,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "task_history"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab3e8a7573f19d05aedc1e784d91d64196969bb0bc3dbb1502c39bc106252405"
+dependencies = [
+ "serde",
+ "serde_json",
+ "stable_digest",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2337,6 +2410,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -2479,6 +2561,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
+name = "tracing"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+dependencies = [
+ "pin-project-lite",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-core"
+version = "0.1.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+dependencies = [
+ "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+]
+
+[[package]]
 name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2582,6 +2713,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2592,6 +2729,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "waker_tables"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dbe55cb71d932f9052734f007e5c27d677efd2b9694709dd2555180d7bd36b5"
 
 [[package]]
 name = "walkdir"
