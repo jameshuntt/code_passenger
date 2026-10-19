@@ -63,6 +63,18 @@ pub enum PassengerError {
     #[liaise(code = 42, msg = "tracked files changed since the snapshot HEAD names; checkout would overwrite them (checkpoint first, or --force): {detail}")]
     Dirty { detail: String },
 
+    // the writers custodian routes to (exit 2)
+    #[liaise(code = 60, msg = "the dependency needs where it comes from: {detail}")]
+    DepVersion { detail: String },
+    #[liaise(code = 61, msg = "the root manifest has no [workspace] table, so there is no workspace dependency table: {detail}")]
+    NoWorkspaceTable { detail: String },
+    #[liaise(code = 62, msg = "a feature still names the dependency; change the feature first: {detail}")]
+    DepInUse { detail: String },
+    #[liaise(code = 63, msg = "the item is not one klepto names in that file: {detail}")]
+    AttrItem { detail: String },
+    #[liaise(code = 64, msg = "the line is not one attribute on one line (#[...]): {detail}")]
+    AttrLine { detail: String },
+
     // agent mode, through custodian_kit
     #[liaise(code = 50, msg = "custodian_kit refused: {detail}")]
     Custodian { detail: String },
@@ -86,7 +98,12 @@ impl PassengerError {
             | PassengerError::TwoFeaturesDocs { .. }
             | PassengerError::FeaturesDocExists { .. }
             | PassengerError::UnknownName { .. }
-            | PassengerError::Dirty { .. } => 2,
+            | PassengerError::Dirty { .. }
+            | PassengerError::DepVersion { .. }
+            | PassengerError::NoWorkspaceTable { .. }
+            | PassengerError::DepInUse { .. }
+            | PassengerError::AttrItem { .. }
+            | PassengerError::AttrLine { .. } => 2,
             _ => 1,
         }
     }

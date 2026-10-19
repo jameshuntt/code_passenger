@@ -155,10 +155,67 @@ pub fn merged_attribute(existing: &klepto::CfgPredicate, predicate: &klepto::Cfg
     format!("#[cfg({})]", merged.render())
 }
 
+/// A carrier's leading lines from its start (0-based indexes): its doc
+/// comments and attributes, multi-line attributes tracked by bracket
+/// balance, up to the declaration line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leading {
+    /// Every attribute, as `[start, end)` line ranges, in order.
+    pub attrs: Vec<(usize, usize)>,
+    /// The first `#[cfg(` attribute's line.
+    pub cfg: Option<usize>,
+    /// The declaration line (where an attribute is inserted above).
+    pub decl: usize,
+}
+
+/// The one placement rule (A1): `gate_file` and `attr place` both walk a
+/// carrier this way.
+pub fn leading(lines: &[String], start: usize) -> Leading {
+    let mut out = Leading { attrs: Vec::new(), cfg: None, decl: start };
+    let mut j = start;
+    while j < lines.len() {
+        let t = lines[j].trim_start();
+        if is_doc_line(t) {
+            j += 1;
+            continue;
+        }
+        if !t.starts_with("#[") {
+            break;
+        }
+        if t.starts_with("#[cfg(") && out.cfg.is_none() {
+            out.cfg = Some(j);
+        }
+        // a (possibly multi-line) attribute by bracket balance
+        let begin = j;
+        let mut depth: i32 = 0;
+        loop {
+            for ch in lines[j].chars() {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+            }
+            j += 1;
+            if depth <= 0 || j >= lines.len() {
+                break;
+            }
+        }
+        out.attrs.push((begin, j));
+    }
+    out.decl = j.min(lines.len());
+    out
+}
+
+/// The indentation of line `at` (the line inserted there takes it).
+pub fn indent_at(lines: &[String], at: usize) -> String {
+    lines.get(at).map(|l| l.chars().take_while(|c| c.is_whitespace()).collect()).unwrap_or_default()
+}
+
 /// Rule A1. The carrier's leading lines are its doc comments and
-/// attributes (multi-line attributes tracked by bracket balance); the
-/// first `#[cfg(` among them is replaced, otherwise the attribute is
-/// inserted right above the declaration line.
+/// attributes ([`leading`]); its first `#[cfg(` is replaced by the merged
+/// condition, otherwise the attribute is inserted right above the
+/// declaration line.
 fn gate_file(before: &str, gates: &mut [&GateEdit]) -> String {
     let had_trailing_newline = before.ends_with('\n');
     let mut lines: Vec<String> = before.lines().map(str::to_string).collect();
@@ -173,43 +230,16 @@ fn gate_file(before: &str, gates: &mut [&GateEdit]) -> String {
         if start >= lines.len() {
             continue;
         }
-        let mut j = start;
-        let mut replaced = false;
-        while j < lines.len() {
-            let t = lines[j].trim_start().to_string();
-            if is_doc_line(&t) {
-                j += 1;
-                continue;
+        let lead = leading(&lines, start);
+        match lead.cfg {
+            Some(c) => {
+                let indent = indent_at(&lines, c);
+                lines[c] = format!("{indent}{}", merged_attribute(&g.existing_cfg, &g.predicate));
             }
-            if !t.starts_with("#[") {
-                break;
+            None => {
+                let indent = indent_at(&lines, lead.decl);
+                lines.insert(lead.decl, format!("{indent}{}", g.attribute_text()));
             }
-            if t.starts_with("#[cfg(") {
-                let indent: String = lines[j].chars().take_while(|c| c.is_whitespace()).collect();
-                lines[j] = format!("{indent}{}", merged_attribute(&g.existing_cfg, &g.predicate));
-                replaced = true;
-                break;
-            }
-            // skip a (possibly multi-line) attribute by bracket balance
-            let mut depth: i32 = 0;
-            loop {
-                for ch in lines[j].chars() {
-                    match ch {
-                        '[' => depth += 1,
-                        ']' => depth -= 1,
-                        _ => {}
-                    }
-                }
-                j += 1;
-                if depth <= 0 || j >= lines.len() {
-                    break;
-                }
-            }
-        }
-        if !replaced {
-            let at = j.min(lines.len());
-            let indent: String = lines.get(at).map(|l| l.chars().take_while(|c| c.is_whitespace()).collect()).unwrap_or_default();
-            lines.insert(at, format!("{indent}{}", g.attribute_text()));
         }
     }
     let mut out = lines.join("\n");

@@ -45,6 +45,8 @@ pub const JOB_ENV: &str = "CODE_PASSENGER_JOB";
 #[composite(command = "patterns", ty = Patterns)]
 #[composite(command = "init", ty = Init)]
 #[composite(command = "agent", ty = Agent, init = "action")]
+#[composite(command = "dep", ty = Dep, init = "action,krate,dep")]
+#[composite(command = "attr", ty = Attr, init = "action,file,item,line")]
 pub struct CodePassenger;
 
 /// `code-passenger --root ROOT WORD...`: a line whose root comes first, as
@@ -85,6 +87,14 @@ fn passenger_action(field: &str, word: &OsStr) -> CommandValidationResult {
 
 fn agent_action(field: &str, word: &OsStr) -> CommandValidationResult {
     word_of(field, word, &["init", "queue", "run"])
+}
+
+fn dep_action(field: &str, word: &OsStr) -> CommandValidationResult {
+    word_of(field, word, &["add", "remove"])
+}
+
+fn attr_action(field: &str, word: &OsStr) -> CommandValidationResult {
+    word_of(field, word, &["place", "remove"])
 }
 
 fn header_plan(field: &str, word: &OsStr) -> CommandValidationResult {
@@ -410,6 +420,62 @@ pub struct Agent {
     pub kind: Option<OsString>,
 }
 
+/// `dep add|remove CRATE DEP[@VERSION] [--root R] [--path P] [--features A,B] [--workspace-table]`:
+/// a dependency of a crate, through toml_edit (custodian's `init --macros`).
+#[allow(clippy::duplicated_attributes)]
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "dep")]
+#[exit_status(code = 0, word = "written or nothing to do")]
+#[exit_status(code = 2, word = "refused")]
+pub struct Dep {
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+    #[builder(init_required, into)]
+    #[arg(positional, each = dep_action)]
+    pub action: OsString,
+    #[builder(init_required, into)]
+    #[arg(positional, each = nonempty)]
+    pub krate: OsString,
+    /// `name` or `name@version`.
+    #[builder(init_required, into)]
+    #[arg(positional, each = nonempty)]
+    pub dep: OsString,
+    #[builder(into)]
+    #[arg(kv = "--path")]
+    pub path: Option<OsString>,
+    #[builder(into)]
+    #[arg(kv = "--features")]
+    pub features: Option<OsString>,
+    #[arg(flag = "--workspace-table")]
+    pub workspace_table: bool,
+}
+
+/// `attr place|remove --file F --item ID --line '#[attr(...)]' [--root R]`:
+/// one attribute line on an item at klepto's location (custodian's `annotate --apply`).
+#[allow(clippy::duplicated_attributes)]
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "attr")]
+#[exit_status(code = 0, word = "written or nothing to do")]
+#[exit_status(code = 2, word = "refused")]
+pub struct Attr {
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+    #[builder(init_required, into)]
+    #[arg(positional, each = attr_action)]
+    pub action: OsString,
+    #[builder(init_required, into)]
+    #[arg(kv = "--file", each = nonempty)]
+    pub file: OsString,
+    #[builder(init_required, into)]
+    #[arg(kv = "--item", each = nonempty)]
+    pub item: OsString,
+    #[builder(init_required, into)]
+    #[arg(kv = "--line", each = nonempty)]
+    pub line: OsString,
+}
+
 /// cargo, as the oracle runs it.
 #[derive(CompositeShell, Debug, Clone, Copy, Default)]
 #[shell(program = "cargo")]
@@ -480,6 +546,8 @@ leaves! {
     Patterns => PatternsRooted,
     Init => InitRooted,
     Agent => AgentRooted,
+    Dep => DepRooted,
+    Attr => AttrRooted,
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +620,8 @@ pub enum Line {
     Patterns(PatternsRooted<CodePassenger>),
     Init(InitRooted<CodePassenger>),
     Agent(AgentRooted<CodePassenger>),
+    Dep(DepRooted<CodePassenger>),
+    Attr(AttrRooted<CodePassenger>),
 }
 
 macro_rules! each_line {
@@ -571,6 +641,8 @@ macro_rules! each_line {
             Line::Patterns($l) => $body,
             Line::Init($l) => $body,
             Line::Agent($l) => $body,
+            Line::Dep($l) => $body,
+            Line::Attr($l) => $body,
         }
     };
 }
@@ -592,6 +664,8 @@ impl Line {
             Line::Patterns(_) => "patterns",
             Line::Init(_) => "init",
             Line::Agent(_) => "agent",
+            Line::Dep(_) => "dep",
+            Line::Attr(_) => "attr",
         }
     }
 
@@ -629,6 +703,8 @@ impl Line {
             Line::Patterns(l) => Line::Patterns(l.root(root)),
             Line::Init(l) => Line::Init(l.root(root)),
             Line::Agent(l) => Line::Agent(l.root(root)),
+            Line::Dep(l) => Line::Dep(l.root(root)),
+            Line::Attr(l) => Line::Attr(l.root(root)),
         }
     }
 }
@@ -664,7 +740,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
         at.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
         return Ok(line.with_root(root));
     }
-    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent".into() })?;
+    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr".into() })?;
     let line = match *cmd {
         "scan" => {
             let w = Words::read(rest, &["--json"], &["--root", "--src"])?;
@@ -830,6 +906,28 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             opt!(l, w, "--root", root);
             opt!(l, w, "--kind", kind);
             Line::Agent(l)
+        }
+        "dep" => {
+            let w = Words::read(rest, &["--workspace-table"], &["--root", "--path", "--features"])?;
+            let p = w.positionals(3, "dep add|remove CRATE DEP[@VERSION]")?;
+            let [action, krate, dep] = p.as_slice() else {
+                return Err(PassengerError::Line { detail: "dep add|remove CRATE DEP[@VERSION]".into() });
+            };
+            let mut l = CodePassenger::dep(action.as_str(), krate.as_str(), dep.as_str());
+            opt!(l, w, "--root", root);
+            opt!(l, w, "--path", path);
+            opt!(l, w, "--features", features);
+            flag!(l, w, "--workspace-table", workspace_table);
+            Line::Dep(l)
+        }
+        "attr" => {
+            let w = Words::read(rest, &[], &["--root", "--file", "--item", "--line"])?;
+            let p = w.positionals(1, "attr place|remove")?;
+            let action = p.first().cloned().ok_or_else(|| PassengerError::Line { detail: "attr needs place or remove".into() })?;
+            let need = |k: &str| w.kv(k).ok_or_else(|| PassengerError::Line { detail: format!("attr {action} needs {k}") });
+            let mut l = CodePassenger::attr(action.as_str(), need("--file")?, need("--item")?, need("--line")?);
+            opt!(l, w, "--root", root);
+            Line::Attr(l)
         }
         other => return Err(PassengerError::Line { detail: format!("`{other}` is not a command") }),
     };
@@ -1009,6 +1107,29 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
             0
         }
         Line::Agent(l) => crate::agent::command(l, &root, exe, &mut out, &mut outputs)?,
+        Line::Dep(l) => {
+            let l = l.leaf();
+            let features: Vec<String> = os(&l.features).map(|f| f.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+            let (krate, dep) = (l.krate.to_string_lossy().into_owned(), l.dep.to_string_lossy().into_owned());
+            let e = match l.action.to_string_lossy().as_ref() {
+                "add" => commands::edit::dep_add(&root, &krate, &dep, os(&l.path).as_deref(), &features, l.workspace_table)?,
+                _ => commands::edit::dep_remove(&root, &krate, &dep, l.workspace_table)?,
+            };
+            out.push_str(&e.render());
+            outputs.extend(e.edits.files.iter().filter(|f| f.before != f.after).map(|f| f.path.clone()));
+            0
+        }
+        Line::Attr(l) => {
+            let l = l.leaf();
+            let (file, item, attr) = (PathBuf::from(&l.file), l.item.to_string_lossy().into_owned(), l.line.to_string_lossy().into_owned());
+            let e = match l.action.to_string_lossy().as_ref() {
+                "place" => commands::edit::attr_place(&root, &file, &item, &attr)?,
+                _ => commands::edit::attr_remove(&root, &file, &item, &attr)?,
+            };
+            out.push_str(&e.render());
+            outputs.extend(e.edits.files.iter().filter(|f| f.before != f.after).map(|f| f.path.clone()));
+            0
+        }
     };
     Ok((code, out, outputs))
 }

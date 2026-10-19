@@ -175,6 +175,36 @@ headers (it reads the apply step's receipt). each step's receipt is in
 ###
 ---
 
+### the writers custodian routes to
+
+custodian never edits a manifest or a source file itself; these do.
+
+```bash
+code-passenger dep add app maintenance@0.1.0 --features check,runner      # [dependencies] through toml_edit, formatting kept
+code-passenger dep add app maintenance --path ../maintenance               # a path dependency
+code-passenger dep add app big-bad-bool@0.1.1 --workspace-table            # the version in [workspace.dependencies], `{ workspace = true }` in the crate
+code-passenger dep remove app maintenance [--workspace-table]              # out of the crate (and the table once no member names it)
+
+code-passenger attr place --file app/src/lib.rs --item app::serve --line '#[sensitivity(secret)]'
+code-passenger attr remove --file app/src/lib.rs --item app::serve --line '#[sensitivity(secret)]'
+```
+
+`dep add` without a version or a path is refused (`[CP0060]`) unless the
+workspace table already holds the dependency; adding one that is there
+updates its version and adds its features. `dep remove` refuses while a
+feature still names the dependency (`[CP0062]`).
+
+`attr place` puts one attribute line on the item at klepto's location of
+it, by the rule the gates use: a `#[cfg(...)]` merges into the item's own
+cfg (`all(old, new)`) or goes right above the declaration; any other
+attribute goes above the item's first attribute, after its doc comments.
+The same line already there is nothing to do. `--item` is klepto's id
+(`app::store::Engine::new`), or `crate::...` for the file's own package; an
+item klepto does not name in that file is refused (`[CP0063]`).
+
+###
+---
+
 ### every command is a declared line
 
 every command is declared once as an xccute line (simple_impl_derive), read

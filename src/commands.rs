@@ -2,6 +2,7 @@
 //! Each module exposes a library function the CLI and the tests call.
 
 pub mod annotate;
+pub mod edit;
 pub mod features;
 pub mod gate;
 pub mod lint;
