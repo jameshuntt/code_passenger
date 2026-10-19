@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.2 (2026-10-19)
+
+The writer for custodian_kit 0.3.2's two new operations, which the first
+real bounded job in the kit needed. Additive: nothing 0.4.1 does changes.
+Every link is pinned to 5c96e39.
+
+- `replace_body`: the function's body, from its opening brace to its closing
+  one, becomes the spec's pieces rendered by `change::render_body`; the
+  signature, docs and attributes above it are not touched
+  ([src/transform.rs#L682](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/transform.rs#L682)). A spec whose function is not the target's own
+  name is refused. What a fresh scan must show: the function still takes as
+  many arguments as before, and the body's first line is in the file. A body
+  of toolkit pieces gives the crate its simple_impl dependency, as
+  `add_method` does.
+- `change_dependency`: each line `change::dependency_changes` lists is
+  changed through toml_edit ([src/transform.rs#L708](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/transform.rs#L708)). Every dependency table
+  of the manifest is read: `[dependencies]`, `[dev-dependencies]`,
+  `[build-dependencies]` and each target's, and an entry renamed with
+  `package = ..` too ([src/commands/edit.rs#L276](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/commands/edit.rs#L276)). A version alone makes the
+  entry the registry's: the path is dropped, and an entry with nothing else
+  on it becomes a bare `"x.y"` with its comment kept; any other key on the
+  entry stays ([src/commands/edit.rs#L234](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/commands/edit.rs#L234)). An entry that takes its source
+  from `[workspace.dependencies]` is refused. What a fresh scan must show is
+  each manifest naming the source asked, read back with `dep_source`
+  ([src/commands/edit.rs#L309](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/commands/edit.rs#L309), [src/transform.rs#L942](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/transform.rs#L942)).
+- A change landing in several crates is checked over all of them and every
+  crate that depends on any of them, not over the first
+  ([src/transform.rs#L1006](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/transform.rs#L1006)).
+- `add_test` places the test in the inline module `to` names, and refuses
+  when the file has no such module ([src/transform.rs#L653](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/src/transform.rs#L653)).
+- custodian_kit 0.3.2 ([Cargo.toml#L48](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/Cargo.toml#L48)).
+
+Proof: [tests/transform.rs#L257](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/tests/transform.rs#L257) (a method's body and a free function's
+body replaced, one of them toolkit pieces with simple_impl added; the
+signature kept, one line more and nothing else moved; another function's
+name refused; a test placed in the fixture's `golden` module, an absent
+module refused) and [tests/transform.rs#L324](https://github.com/jameshuntt/code_passenger/blob/5c96e3995995bfa8e62f7ab50f08a16bbd4e945b/tests/transform.rs#L324) (the fixture's path
+dependency changed and checked by cargo; the text rule over a dependency
+table, a dev table, a target table and a renamed package; `workspace = true`
+refused). All 49 tests pass, and the vocabulary test holds that every
+operation has its test.
+
 ## 0.4.1 (2026-10-19)
 
 code_passenger on custodian_kit 0.3.0. In 0.3.0 the kit's journal is
