@@ -148,7 +148,7 @@ pub fn queue(root: &Path, kind: &str, name: Option<&str>) -> Result<PathBuf> {
     if dir.exists() {
         return Err(PassengerError::Custodian { detail: format!("{} is already queued", dir.display()) });
     }
-    let jf = JobFile { id: None, name: Some(name), kind: Some(kind.to_string()), target: None, origin: None };
+    let jf = JobFile { id: None, name: Some(name), kind: Some(kind.to_string()), target: None, origin: None, ..Default::default() };
     write_whole(&dir.join("job.toml"), toml::to_string(&jf).map_err(PassengerError::toml)?.as_bytes()).map_err(custodian)?;
     Ok(dir)
 }
