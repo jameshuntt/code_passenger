@@ -40,10 +40,20 @@ pub struct UsedSymbols {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureNote {
     pub feature_name: String,
+    /// The dependencies the feature turns on that this file uses.
     pub deps: Vec<String>,
+    /// The units of this file behind the feature: `file <path>`,
+    /// `module <key>`, `function <id>`, `item <id>`.
     pub scope: Vec<String>,
+    /// Every item of the file is behind the feature: the file's `#![cfg]`.
     pub corpus: bool,
     pub used_in_file: bool,
+    /// The file's items unavailable with the feature off.
+    #[serde(default)]
+    pub unavailable: Vec<String>,
+    /// Callers in other crates that lose items of this file.
+    #[serde(default)]
+    pub lost_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,17 +40,17 @@ pub struct GateOutcome {
 
 /// Rule G2.
 pub fn plan(root: &Path, package: Option<&str>, spec: &Path) -> Result<(Klepto, Planned)> {
-    let spec = FeatureSpec::from_path(spec).map_err(|e| PassengerError::Unsupported(e.to_string()))?;
+    let spec = FeatureSpec::from_path(spec).map_err(|e| PassengerError::unsupported(e.to_string()))?;
     let k = klepto_for(root)?;
     let package = resolve_package(&k, root, package)?;
     let current = k
         .feature_model(&package)
         .cloned()
-        .ok_or_else(|| PassengerError::Unsupported(format!("no feature model for package `{package}` (is it a workspace member?)")))?;
+        .ok_or_else(|| PassengerError::unsupported(format!("no feature model for package `{package}` (is it a workspace member?)")))?;
     let pspec = spec
         .package(&package)
         .cloned()
-        .ok_or_else(|| PassengerError::Unsupported(format!("the spec has no [{package}] table")))?;
+        .ok_or_else(|| PassengerError::unsupported(format!("the spec has no [{package}] table")))?;
     let desired = current.apply_spec(&pspec);
     let plan = k.plan_gates(&package, &desired);
     Ok((k, Planned { package, current, desired, plan }))

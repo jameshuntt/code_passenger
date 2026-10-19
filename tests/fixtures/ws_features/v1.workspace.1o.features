@@ -1,0 +1,12 @@
+{
+  features {
+    default {
+      feature "log"
+    }
+    feature {
+      name "log"
+      dep "store:logsink"
+      dep "app:logsink"
+    }
+  }
+}

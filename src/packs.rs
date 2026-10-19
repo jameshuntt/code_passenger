@@ -19,7 +19,7 @@ pub trait LanguagePack: Send + Sync {
 
     /// Optional: generate scaffolding for a new file/module.
     fn scaffold(&self, _plan: &dyn ScaffoldPlan, _req: ScaffoldRequest) -> Result<ScaffoldOutput> {
-        Err(PassengerError::Unsupported("scaffold not supported by this pack".into()))
+        Err(PassengerError::unsupported("scaffold not supported by this pack"))
     }
 }
 
@@ -31,6 +31,6 @@ pub fn get_pack(lang: &str) -> Result<Box<dyn LanguagePack>> {
     match lang {
         #[cfg(feature = "lang_rust")]
         "rust" | "rs" => Ok(Box::new(rust::RustPack)),
-        _ => Err(PassengerError::Unsupported(format!("language pack '{lang}' not available"))),
+        _ => Err(PassengerError::unsupported(format!("language pack '{lang}' not available"))),
     }
 }

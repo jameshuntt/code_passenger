@@ -8,7 +8,13 @@ pub struct PassengerConfig {
     pub default_branch: String,     // e.g. "main"
     pub hash_algo: String,          // "sha256"
     pub compress: bool,             // store blobs compressed
-    pub track_roots: Vec<String>,   // e.g. ["src", "Cargo.toml"]
+    /// What is tracked: the files klepto's scan reads and the features document.
+    #[serde(default = "tracked_default")]
+    pub tracked: String,
+}
+
+fn tracked_default() -> String {
+    "klepto-scan+features-document".to_string()
 }
 
 impl Default for PassengerConfig {
@@ -19,7 +25,7 @@ impl Default for PassengerConfig {
             default_branch: "main".to_string(),
             hash_algo: "sha256".to_string(),
             compress: true,
-            track_roots: vec!["src".to_string(), "Cargo.toml".to_string()],
+            tracked: tracked_default(),
         }
     }
 }

@@ -16,7 +16,11 @@ impl HeaderPlan for VerbosePlan {
         out.push_str("//!\n");
         out.push_str(&format!("//! filename:{}\n", report.document.filename));
         out.push_str("//! description:\n");
-        out.push_str("//! usages:none in crate yet\n");
+        if report.used.packages.is_empty() {
+            out.push_str("//! usages:none\n");
+        } else {
+            out.push_str(&format!("//! usages:{:?}\n", report.used.packages.iter().collect::<Vec<_>>()));
+        }
         out.push_str("//!\n");
 
         out.push_str("//! ----------------------------------------------\n");
@@ -28,6 +32,10 @@ impl HeaderPlan for VerbosePlan {
             out.push_str(&format!("//! deps:{:?}\n", n.deps));
             out.push_str(&format!("//! scope:{:?}\n", n.scope));
             out.push_str(&format!("//! corpus:{}\n", n.corpus));
+            out.push_str(&format!("//! unavailable:{:?}\n", n.unavailable));
+            if !n.lost_by.is_empty() {
+                out.push_str(&format!("//! lost_by:{:?}\n", n.lost_by));
+            }
         }
 
         out.push_str("//!\n");

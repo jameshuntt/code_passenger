@@ -67,6 +67,6 @@ fn {snake}_smoke() {
 pub fn get_scaffold_plan(id: &str) -> Result<Box<dyn ScaffoldPlan>> {
     match id {
         "default" => Ok(Box::new(DefaultScaffoldPlan)),
-        _ => Err(PassengerError::Unsupported(format!("scaffold plan '{id}' not available"))),
+        _ => Err(PassengerError::unsupported(format!("scaffold plan '{id}' not available"))),
     }
 }

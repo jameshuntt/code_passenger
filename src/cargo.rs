@@ -50,9 +50,9 @@ pub fn manifest_info(model: &FeatureModel) -> ManifestInfo {
 pub fn builder(root: &Path) -> Result<KleptoBuilder> {
     Klepto::new("workspace")
         .scan_workspace_root(root)
-        .map_err(|e| PassengerError::Unsupported(e.to_string()))?
+        .map_err(|e| PassengerError::unsupported(e.to_string()))?
         .exclude_generated()
-        .map_err(|e| PassengerError::Unsupported(e.to_string()))
+        .map_err(|e| PassengerError::unsupported(e.to_string()))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {

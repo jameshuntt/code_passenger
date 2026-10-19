@@ -1,9 +1,9 @@
 //! The cargo oracle (rules O1–O4 in `GATE_RULES.md`): proves a plan with
 //! real `cargo check` on a scratch copy. The real tree is never written.
 
-use crate::gate::{apply, relative, scratch_copy, workspace_root};
+use crate::gate::{apply_with, relative, scratch_copy, workspace_root, EditSet};
 use klepto::{parse_cargo_json, CheckJob, Diagnostic, GatePlan, Oracle, OracleResult};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,6 +15,8 @@ pub struct CargoOracle {
     /// Files written into the scratch copy by the previous check, relative
     /// to the workspace root (rule O1).
     touched: BTreeSet<PathBuf>,
+    /// Package → manifest, from cargo metadata once (rule A2).
+    manifests: Option<BTreeMap<String, PathBuf>>,
     pub offline: bool,
 }
 
@@ -27,7 +29,7 @@ fn internal(message: String) -> OracleResult {
 
 impl CargoOracle {
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf(), workspace: None, scratch: None, touched: BTreeSet::new(), offline: true }
+        Self { root: root.to_path_buf(), workspace: None, scratch: None, touched: BTreeSet::new(), manifests: None, offline: true }
     }
 
     /// The workspace the scratch copy mirrors, once a check has run.
@@ -47,10 +49,25 @@ impl CargoOracle {
         &self.touched
     }
 
-    /// Rule O1: pristine copy of the whole workspace on first use;
-    /// previously touched files restored. Returns the scratch directory
-    /// that corresponds to `root` (cargo's working directory).
+    fn manifest_of(&mut self, package: &str) -> Result<PathBuf, String> {
+        if self.manifests.is_none() {
+            let b = crate::cargo::builder(&self.root).map_err(|e| e.to_string())?;
+            self.manifests = Some(b.packages().iter().map(|(n, p)| (n.clone(), p.manifest_path.clone())).collect());
+        }
+        self.manifests.as_ref().and_then(|m| m.get(&package.replace('-', "_")).cloned()).ok_or_else(|| format!("no workspace member named `{package}`"))
+    }
+
+    /// Rule O1 for one package's plan.
     fn prepare(&mut self, plan: &GatePlan) -> Result<PathBuf, String> {
+        let manifest = if plan.manifest.is_empty() { None } else { Some(self.manifest_of(&plan.package)?) };
+        let edits = apply_with(plan, manifest.as_deref()).map_err(|e| e.to_string())?;
+        self.prepare_edits(&edits)
+    }
+
+    /// Rule O1: pristine copy of the whole workspace on first use;
+    /// previously touched files restored, then `edits` written. Returns the
+    /// scratch directory that corresponds to `root` (cargo's working directory).
+    fn prepare_edits(&mut self, edits: &EditSet) -> Result<PathBuf, String> {
         if self.workspace.is_none() {
             self.workspace = Some(workspace_root(&self.root).map_err(|e| e.to_string())?);
         }
@@ -70,7 +87,6 @@ impl CargoOracle {
                 let _ = std::fs::remove_file(&dst);
             }
         }
-        let edits = apply(&self.root, plan).map_err(|e| e.to_string())?;
         let written = edits.write_to(&ws, &scratch).map_err(|e| e.to_string())?;
         self.touched.extend(written);
         let inside = relative(&ws, &self.root).map_err(|e| e.to_string())?;
@@ -78,20 +94,27 @@ impl CargoOracle {
     }
 }
 
-impl Oracle for CargoOracle {
-    /// Rules O2–O3.
-    fn check(&mut self, _root: &Path, job: &CheckJob, plan: &GatePlan) -> OracleResult {
-        let cwd = match self.prepare(plan) {
-            Ok(s) => s,
-            Err(e) => return internal(format!("oracle setup failed: {e}")),
-        };
+impl CargoOracle {
+    /// Rules O2–O3 for a whole workspace's edits at once: every package's
+    /// gates and manifest edits written into the scratch copy, then `job`.
+    pub fn check_edits(&mut self, job: &CheckJob, edits: &EditSet) -> OracleResult {
+        match self.prepare_edits(edits) {
+            Ok(cwd) => self.run(job, &cwd),
+            Err(e) => internal(format!("oracle setup failed: {e}")),
+        }
+    }
+
+    fn run(&mut self, job: &CheckJob, cwd: &Path) -> OracleResult {
         let target_dir = self.scratch.as_ref().map(|d| d.path().join("target")).unwrap_or_else(|| cwd.join("target"));
+        let cwd = cwd.to_path_buf();
+        // the declared line (`crate::lines::Cargo`), run by the cargo that runs us
+        let line = crate::lines::cargo_check(job, self.offline);
+        if let Err(e) = xccute_contract::ValidatedCommand::validate(&line) {
+            return internal(format!("the cargo check line was refused: {e}"));
+        }
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let mut cmd = Command::new(cargo);
-        cmd.args(job.cargo_args());
-        if self.offline {
-            cmd.arg("--offline");
-        }
+        cmd.args(xccute_contract::CompositeShellCommand::argv(&line));
         cmd.current_dir(&cwd);
         cmd.env("CARGO_TARGET_DIR", target_dir);
         let output = match cmd.output() {
@@ -113,5 +136,15 @@ impl Oracle for CargoOracle {
             });
         }
         OracleResult { ok: output.status.success(), diagnostics }
+    }
+}
+
+impl Oracle for CargoOracle {
+    /// Rules O2–O3.
+    fn check(&mut self, _root: &Path, job: &CheckJob, plan: &GatePlan) -> OracleResult {
+        match self.prepare(plan) {
+            Ok(cwd) => self.run(job, &cwd),
+            Err(e) => internal(format!("oracle setup failed: {e}")),
+        }
     }
 }

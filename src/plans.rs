@@ -32,12 +32,23 @@ pub mod verbose;
 #[cfg(feature = "plan_compact")]
 pub mod compact;
 
+/// A plan's gate selection (`HeaderPlanV2::select_gates`), by name.
+pub fn get_plan_v2(plan: &str) -> Result<Box<dyn HeaderPlanV2>> {
+    match plan {
+        #[cfg(feature = "plan_verbose")]
+        "verbose" => Ok(Box::new(verbose::VerbosePlan)),
+        #[cfg(feature = "plan_compact")]
+        "compact" => Ok(Box::new(compact::CompactPlan)),
+        _ => Err(PassengerError::unsupported(format!("header plan '{plan}' not available"))),
+    }
+}
+
 pub fn get_plan(plan: &str) -> Result<Box<dyn HeaderPlan>> {
     match plan {
         #[cfg(feature = "plan_verbose")]
         "verbose" => Ok(Box::new(verbose::VerbosePlan)),
         #[cfg(feature = "plan_compact")]
         "compact" => Ok(Box::new(compact::CompactPlan)),
-        _ => Err(PassengerError::Unsupported(format!("header plan '{plan}' not available"))),
+        _ => Err(PassengerError::unsupported(format!("header plan '{plan}' not available"))),
     }
 }

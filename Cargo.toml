@@ -1,22 +1,25 @@
 [package]
 name = "code_passenger"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 license = "MIT OR Apache-2.0"
-description = "Language-pack + header-plan driven code annotator: scans usage + auto-generates feature gates and doc headers."
+description = "Scans a Rust workspace with klepto and does the writing: feature gates across every crate from one features document, proven by cargo check, Cargo.toml edits, file headers from the plan, and the history of it."
 
 authors = ["James Hunt <james@1o.business>"]
 repository = "https://github.com/jameshuntt/code_passenger"
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE*"]
+include = ["src/**", "schema/**", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE*"]
 readme = "README.md"
 
 [[bin]]
 name = "code-passenger"
 path = "src/main.rs"
+required-features = ["bin"]
 
 [features]
-default = ["lang_rust", "plan_verbose"]
+default = ["lang_rust", "plan_verbose", "bin"]
+# the `code-passenger` program; a library user turns it off with default-features = false
+bin = []
 lang_rust = []
 lang_ts = []
 plan_verbose = []
@@ -25,22 +28,37 @@ plan_compact = []
 [dependencies]
 walkdir = "2.5.0"
 toml_edit = "0.22"
-clap = { version = "4.5.37", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-thiserror = "2.0.12"
 im = { version = "15", features = ["serde"]}
 
 toml = "0.8.20"
 
-sha2 = "0.10.8"
-hex = "0.4.3"
 chrono = { version = "0.4.40", features = ["serde"] }
 
 zstd = "0.13"
 similar = "2.6"
 
-klepto = { version = "0.3.1", path = "../klepto" }
 tempfile = "3.19.1"
+
+# the one extractor
+klepto = { version = "0.3.1", path = "../klepto" }
+# jobs as folders, the journal and its receipts (agent mode); the scope depth of what a feature turns off
+custodian_kit = { version = "0.1.0", path = "../custodian_kit" }
+# the workspace features document: 1o, its schema declared once
+core-1o = "0.1.1"
+# every command a declared line, every run decided by the executor with a receipt
+simple_impl_derive = "0.2.6"
+xccute_contract = "0.1.2"
+xccute_runtime = "0.1.2"
+# the .passenger store's paths, named once
+pathgen = "0.1.2"
+# refusals as codes, one table
+liaise = "0.2.4"
+# every digest
+stable_digest = "0.1.1"
+# the plan flags as one word, its rules checked
+big-bad-bool = "0.1.1"
+flaga_solver = "0.1.1"
 
 [dev-dependencies]

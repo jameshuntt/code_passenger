@@ -63,12 +63,17 @@ fn canon(p: &Path) -> PathBuf {
 
 /// `path` relative to `base`, `/`-separated.
 fn rel_to(base: &Path, p: &Path) -> Result<String> {
-    let rel = p.strip_prefix(base).or_else(|_| p.strip_prefix(canon(base))).map_err(|e| PassengerError::Path(format!("{}: {e}", p.display())))?;
+    let rel = p.strip_prefix(base).or_else(|_| p.strip_prefix(canon(base))).map_err(|e| PassengerError::path(format!("{}: {e}", p.display())))?;
     Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
 pub fn run_scan(ctx: &RunContext) -> Result<EngineOutput> {
-    let k = crate::cargo::builder(&ctx.root)?.parse().map_err(|e| PassengerError::Unsupported(e.to_string()))?;
+    let k = crate::cargo::builder(&ctx.root)?.parse().map_err(|e| PassengerError::unsupported(e.to_string()))?;
+    run_scan_on(ctx, &k)
+}
+
+/// `scan` over a parse already made.
+pub fn run_scan_on(ctx: &RunContext, k: &klepto::Klepto) -> Result<EngineOutput> {
     let packages: BTreeMap<String, ManifestInfo> = k.features.iter().map(|(n, m)| (n.clone(), manifest_info(m))).collect();
     let manifest = package_with_manifest(&k.packages, &ctx.manifest_path)
         .and_then(|p| packages.get(&p.name).cloned())

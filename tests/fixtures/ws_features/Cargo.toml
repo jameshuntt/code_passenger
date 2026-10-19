@@ -1,0 +1,5 @@
+[workspace]
+resolver = "2"
+members = ["store", "app"]
+# logsink is the dependency the feature turns off; it is not a member
+exclude = ["deps"]

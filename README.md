@@ -1,15 +1,200 @@
 ###
 ---
 
-### code_passenger 0.2.0 — scans a workspace with klepto, then does the writing klepto never does:
-### feature gates, cargo edits, headers, reports.
+### code_passenger 0.3.0 — scans a workspace with klepto, then does the writing klepto never does:
+### feature gates across every crate, cargo edits, headers, reports, and the history of it all.
 
 ###
 ---
 
-### the feature-gating loop (new in 0.2.0)
+### workspace features (new in 0.3.0)
 
-write a spec that says what you want the feature model to look like:
+one document at the workspace root says what every crate's features are.
+it is a 1o document, `v1.workspace.1o.features`; `features.toml` is accepted
+for the same document (keep one of the two):
+
+```text
+{
+  features {
+    default {
+      feature "log"
+    }
+    feature {
+      name "log"
+      dep "store:logsink"
+      dep "app:logsink"
+    }
+  }
+}
+```
+
+```toml
+# features.toml, the same document
+default = ["log"]
+
+[features.log]
+deps = ["store:logsink", "app:logsink"]
+```
+
+`feature log` with `dep "store:logsink"` means: crate `store` gets a feature
+`log`, and its dependency `logsink` becomes optional behind it. one feature
+can stack several dependencies and span every crate. `default` turns the
+workspace features on by default in every crate that has them. a crate's own
+lines (`crate { name "app" ... }`, `[crates.app]`) replace a list verbatim
+where the derived one is not what that crate needs.
+
+```bash
+code-passenger init --root .                 # writes the document from the current feature models (planning it changes nothing)
+code-passenger features plan --root .        # every crate planned and proven with real cargo check; never writes
+code-passenger features apply --root . --write   # the same, written, with a passenger checkpoint before and after
+code-passenger features check --root .       # CI: exit 1 while there is work; never writes, never runs cargo
+```
+
+what happens, in one run for the whole workspace:
+
+1. each crate's klepto spec is derived from the document.
+2. klepto plans each crate's gates: every use of a dependency that is now
+   optional gets `#[cfg(feature = "log")]` on its carrier, and everything
+   in the crate depending on those gets one too.
+3. across crates: when `app` uses an item `store` now gates, `app`'s `log`
+   turns on `store`'s (`store/log`) and the item in `app` is gated the same
+   way (a module-level `use` gets a `use` gate). this repeats until nothing
+   new is gated.
+4. the cargo check: one scratch copy of the workspace holds every crate's
+   edits, and every crate the plan touches, and every crate using one, is
+   checked with every feature combination that matters. a compiler error
+   klepto maps to an item becomes a gate and the workspace is planned again.
+5. with each feature off, the report says what goes: the items unavailable,
+   the unit each one is (a function, an item, a whole module, a whole file,
+   the whole crate), every use site with its unit, and the callers in other
+   crates that lose them.
+
+exit codes: `0` nothing to do, converged, or written; `1` `check` found work
+or the cargo check gave up; `2` refused, with a code: `[CP0020]` something a
+person has to decide (a carrier klepto cannot judge, a compiler error no gate
+answers), `[CP0021]` `--write --no-cargo` without `--unproven` (an unproven
+plan is written only when you say so). nothing is written on 1 or 2.
+
+the document's keys, rendered from its schema (`schema/features/v1.schema.json`,
+declared once; a test holds this table to it):
+
+| 1o key | TOML | value | meaning |
+|---|---|---|---|
+| `features` | `(the document)` | block, required | The one block of the document. |
+| `features crate` | `[crates.<name>]` | block | One crate's own lines. Repeats: one block per crate. |
+| `features crate default` | `default` | block | The crate's default list as Cargo spells it, replacing the derived one. |
+| `features crate default feature` | `default = ["<entry>", ...]` | string | One entry of the crate's default list. Repeats: one value per line, in order. |
+| `features crate feature` | `[crates.<name>.features]` | block | One feature's whole list in this crate, as Cargo spells it; it replaces the derived list, in this order. Repeats: one block per feature. |
+| `features crate feature enable` | `<feature> = ["<entry>", ...]` | string | One entry of the list: `dep:x`, `x/feat`, `x?/feat` or another feature. Repeats: one value per line, in order. |
+| `features crate feature name` | `<feature>` | string, required | The feature. |
+| `features crate name` | `<name>` | string, required | The crate, by its package name. |
+| `features crate optional` | `optional = ["<dependency>", ...]` | string | A dependency made optional with no workspace feature (Cargo's implicit feature). Repeats: one value per line, in order. |
+| `features default` | `default` | block | The workspace features on by default, in every crate that has them. Absent: each crate's default list stays as it is. |
+| `features default feature` | `default = ["<feature>", ...]` | string | A workspace feature on by default. Repeats: one value per line, in order. |
+| `features feature` | `[features.<name>]` | block | One workspace feature. Repeats: one block per feature. |
+| `features feature dep` | `deps = ["<crate>:<dependency>", ...]` | string | `<crate>:<dependency>`: the crate gets the feature, and the dependency becomes optional behind it. Repeats: one value per line, in order. |
+| `features feature name` | `<name>` | string, required | The feature's name, the same in every crate. |
+
+`init` also copies the schema to `.passenger/config/schema/` and lists that
+folder in `oneo.project.json`, where core-1o's workspace (and so
+language-server-1o) looks: the document is checked live while you edit it.
+
+###
+---
+
+### headers
+
+```bash
+code-passenger annotate --root . --check     # exit 1 while a header would change
+code-passenger annotate --root . --write
+```
+
+every file gets a header between `//! code_passenger:begin` and
+`//! code_passenger:end`, written from the features plan: for each feature
+with an item of the file behind it, the dependencies the file uses that the
+feature turns on, the units of the file behind it, the items unavailable
+with it off and the callers in other crates that lose them. a file wholly
+behind a feature carries it as `#![cfg(feature = "...")]`:
+
+```txt
+//! feature_name:log
+//! deps:["logsink"]
+//! scope:["file store/src/sink.rs"]
+//! corpus:true
+//! unavailable:["store::sink::flush", "store::sink::flush_twice"]
+//!
+//! ----------------------------------------------
+//! CORPUS FEATURES ------------------------------
+//!
+#![cfg(feature = "log")]
+```
+
+a header describes gates the code has, so `annotate` refuses (`[CP0023]`)
+while the features plan has work left. without a document it plans the one
+`init` would write.
+
+###
+---
+
+### history
+
+`features apply --write` checkpoints the workspace into the passenger store
+before and after it writes (scan.json, analysis.json, the plan and the
+document beside the snapshot). the store is the workspace root's
+(`<root>/.passenger/`), whatever directory you run from; it tracks the files
+klepto's scan reads and the document.
+
+```bash
+code-passenger passenger log --root .
+code-passenger passenger checkout S000001 --root .    # HEAD moves, the snapshot's files are written back
+```
+
+`checkout` refuses (`[CP0042]`) when a tracked file changed since HEAD's
+snapshot (checkpoint first, or `--force`); a file the snapshot does not
+hold is left as it is.
+
+###
+---
+
+### agent mode
+
+```bash
+code-passenger agent init --root .     # custodian's .custodian/ layout, and the `features` job template
+code-passenger agent queue --root .    # a job folder in .custodian/state/jobs/queued/
+code-passenger agent run --root .      # plan → apply → annotate, each step a receipt in the journal
+```
+
+the `features` job is a folder that moves queued → running → done. its
+steps are code-passenger lines started by custodian_kit's executor: the plan
+(proven, written into the folder), the apply of exactly that plan (it reads
+the plan step's receipt and refuses if the code changed since), and the
+headers (it reads the apply step's receipt). each step's receipt is in
+`.custodian/data/receipts/`; the folder ends with `closing.md` and
+`closing.json`.
+
+###
+---
+
+### every command is a declared line
+
+every command is declared once as an xccute line (simple_impl_derive), read
+back from its words, validated, and decided by its own exit statuses; every
+run ends with a receipt. with a `.custodian/` folder the receipt is kept in
+its journal, otherwise its digest is printed on stderr. both spellings work:
+
+```bash
+code-passenger features plan --root .
+code-passenger --root . features plan
+```
+
+the program is behind the `bin` feature (on by default, so `cargo install`
+keeps working); a library user turns it off with `default-features = false`
+and gets no command line.
+
+###
+---
+
+### one crate, a klepto.toml spec (0.2.0's loop, unchanged)
 
 ```toml
 # klepto.toml — move `beta` behind a feature `b` in package `app`
@@ -21,36 +206,11 @@ default = []
 b = ["dep:beta"]
 ```
 
-then:
-
 ```bash
-# what would change (plan + diff), nothing written
-code-passenger --root . gate --spec klepto.toml
-
-# CI: exit 1 while there is gating left to do
-code-passenger --root . gate --spec klepto.toml --check
-
-# prove it with real `cargo check` on a scratch copy, then write it
-code-passenger --root . gate --spec klepto.toml --write
+code-passenger gate --root . --spec klepto.toml            # plan + diff, nothing written
+code-passenger gate --root . --spec klepto.toml --check    # CI: exit 1 while there is gating left to do
+code-passenger gate --root . --spec klepto.toml --write    # prove with real cargo check, then write
 ```
-
-what happens:
-
-1. klepto plans the gates: every use of `beta` that is not already behind
-   `feature = "b"` gets a `#[cfg(feature = "b")]` on its carrier, and
-   everything that depends on those carriers gets one too (the cascade).
-2. the cargo oracle copies the tree to a scratch dir (minus `target`,
-   `.git`, `.passenger`), applies the plan there, and runs `cargo check`
-   for every feature combination that matters. errors the plan missed come
-   back as forced gates; it goes again until everything compiles.
-3. only then, and only with `--write`, the real files change: `#[cfg]`
-   lines above the items (an existing `#[cfg(unix)]` becomes
-   `#[cfg(all(unix, feature = "b"))]`, never two attributes stacked) and
-   `Cargo.toml` edits through `toml_edit` so your formatting survives.
-
-exit codes: `0` nothing to do or converged, `1` `--check` found work or
-the oracle gave up, `2` something a person has to decide (the plan lists
-it under `unknown` / `human`). nothing is written on 1 or 2.
 
 ###
 ---
@@ -58,9 +218,9 @@ it under `unknown` / `human`). nothing is written on 1 or 2.
 ### review before you gate
 
 ```bash
-code-passenger --root . feature-map                          # crates, features, deps, use-site counts
-code-passenger --root . feature-sites beta                   # every use site of a dep (or of a feature's deps), by file, with cfg
-code-passenger --root . feature-probe beta --spec klepto.toml   # what is ungated, what would be gated, what gets lost; never writes
+code-passenger feature-map --root .                           # crates, features, deps, use-site counts
+code-passenger feature-sites beta --root .                    # every use site of a dep (or of a feature's deps), by file, with cfg
+code-passenger feature-probe beta --root . --spec klepto.toml # what is ungated, what would be gated, what gets lost; never writes
 ```
 
 `--json` on any of them prints the structure instead of the text.
@@ -71,83 +231,19 @@ code-passenger --root . feature-probe beta --spec klepto.toml   # what is ungate
 ### the rest of klepto, on the command line
 
 ```bash
-code-passenger --root . receipt --out receipt.json --kg kg/   # the versioned receipt + knowledge-graph ndjson
-code-passenger --root . lint [--policy policy.toml]           # klepto's analyses under a policy; exit code = verdict
-code-passenger --root . patterns --top 20                     # repeated code: extract / parameterize / generic / trait / macro candidates
+code-passenger receipt --root . --out receipt.json --kg kg/   # the versioned receipt + knowledge-graph ndjson
+code-passenger lint --root . [--policy policy.toml]           # klepto's analyses under a policy; exit code = verdict
+code-passenger patterns --root . --top 20                     # repeated code: extract / parameterize / generic / trait / macro candidates
 ```
-
-the default lint policy denies ungated dependency uses (KLEP010) and
-cfg-edge violations (KLEP011) and allows the noisy info rules. a policy
-file looks like:
-
-```toml
-[levels]
-KLEP013 = "deny"     # unreferenced private items fail the build
-KLEP001 = "allow"
-
-[max]
-KLEP002 = 0          # no unwrap in public API
-```
-
-###
----
-
-### the original job: headers
-
-### check out report.json, it was made by doing this:
-```bash
-cargo run -- --root ../classified --src src --json scan
-```
-
-### if you wanna see the crate it was made from, go check out:
-
-```txt
-https://github.com/jameshuntt/classified
-```
-
-### it is designed to make file headers and documentations that explains itself
-### it is intended to be a templating engine for max flexibility
-
-# intended to produce things like this on command:
-
-```txt
-//! ----------------------------------------------
-//! DOCUMENT DETAILS -----------------------------
-//! 
-//! filename:thread_pool_manager.rs
-//! description:
-//! usages:none in crate yet
-//! 
-//! ----------------------------------------------
-//! FEATURE NOTES --------------------------------
-//! 
-//! feature_name:async
-//! deps:[tokio][async_trait]
-//! scope:[impl ThreadPoolManager]
-//! corpus:true
-//! 
-//! feature_name:std
-//! deps:[std]
-//! scope:[impl ThreadPoolManager]
-//! corpus:false
-//! 
-//! ----------------------------------------------
-//! CORPUS FEATURES ------------------------------
-//! 
-#![cfg(feature = "async")]
-#![cfg(feature = "std")]
-```
-
-`scan`, `annotate`, `scaffold` and `passenger` (the checkpoint store) are
-unchanged in 0.2.0.
 
 ###
 ---
 
 ### notes
 
-- klepto is a path dependency until klepto 0.2.0 is on crates.io.
-- the oracle runs `cargo` offline; path dependencies only, nothing is
+- klepto is a path dependency (0.3.1, pending); so are custodian_kit and its
+  path dependencies (bundles, maintenance).
+- the cargo check runs `cargo` offline; path dependencies only, nothing is
   downloaded and nothing outside the scratch copy is touched.
-- the rules every command follows, with the fixture and tests that pin
-  them, are in `the gate rules (cited in the source)` and `tests/gate.rs`.
+- edits inside macro bodies are out of scope; carriers klepto cannot name
+  are listed under `unknown` and a person decides.

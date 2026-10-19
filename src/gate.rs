@@ -96,7 +96,7 @@ pub(crate) fn relative(root: &Path, path: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(root)
         .ok()
         .and_then(|c| path.strip_prefix(&c).ok().map(Path::to_path_buf))
-        .ok_or_else(|| PassengerError::Path(format!("{} is not under {}", path.display(), root.display())))
+        .ok_or_else(|| PassengerError::path(format!("{} is not under {}", path.display(), root.display())))
 }
 
 fn skip_dir(name: &OsStr) -> bool {
@@ -108,7 +108,7 @@ fn skip_dir(name: &OsStr) -> bool {
 pub fn find_manifest(root: &Path, package: &str) -> Result<PathBuf> {
     let b = crate::cargo::builder(root)?;
     crate::cargo::manifest_of(b.packages(), package)
-        .ok_or_else(|| PassengerError::Unsupported(format!("no workspace member named `{package}` under {}", root.display())))
+        .ok_or_else(|| PassengerError::unsupported(format!("no workspace member named `{package}` under {}", root.display())))
 }
 
 /// Rules A1–A2.
@@ -132,7 +132,7 @@ pub fn apply_with(plan: &GatePlan, manifest: Option<&Path>) -> Result<EditSet> {
     }
     let manifest = match (plan.manifest.is_empty(), manifest) {
         (true, _) => None,
-        (false, None) => return Err(PassengerError::Unsupported(format!("the plan edits the manifest of `{}`, and none is known", plan.package))),
+        (false, None) => return Err(PassengerError::unsupported(format!("the plan edits the manifest of `{}`, and none is known", plan.package))),
         (false, Some(path)) => {
             let before = std::fs::read_to_string(path)?;
             let after = edit_manifest(&before, &plan.manifest)?;
@@ -274,13 +274,13 @@ fn make_optional(doc: &mut toml_edit::DocumentMut, dep: &str) -> Result<()> {
     if hit {
         Ok(())
     } else {
-        Err(PassengerError::Unsupported(format!("dependency `{dep}` is not declared in the manifest")))
+        Err(PassengerError::unsupported(format!("dependency `{dep}` is not declared in the manifest")))
     }
 }
 
 /// Rule A2.
 fn edit_manifest(before: &str, edits: &[ManifestEdit]) -> Result<String> {
-    let mut doc: toml_edit::DocumentMut = before.parse().map_err(|e: toml_edit::TomlError| PassengerError::Toml(e.to_string()))?;
+    let mut doc: toml_edit::DocumentMut = before.parse().map_err(|e: toml_edit::TomlError| PassengerError::toml(e.to_string()))?;
     for e in edits {
         match e {
             ManifestEdit::MakeOptional { dep } => make_optional(&mut doc, dep)?,
@@ -290,7 +290,7 @@ fn edit_manifest(before: &str, edits: &[ManifestEdit]) -> Result<String> {
                 }
                 let feats = doc["features"]
                     .as_table_like_mut()
-                    .ok_or_else(|| PassengerError::Toml("[features] is not a table".into()))?;
+                    .ok_or_else(|| PassengerError::toml("[features] is not a table"))?;
                 feats.insert(name, toml_edit::value(string_array(enables)));
             }
             ManifestEdit::SetDefault { features } => {
@@ -299,7 +299,7 @@ fn edit_manifest(before: &str, edits: &[ManifestEdit]) -> Result<String> {
                 }
                 let feats = doc["features"]
                     .as_table_like_mut()
-                    .ok_or_else(|| PassengerError::Toml("[features] is not a table".into()))?;
+                    .ok_or_else(|| PassengerError::toml("[features] is not a table"))?;
                 feats.insert("default", toml_edit::value(string_array(features)));
             }
         }
@@ -340,7 +340,7 @@ pub fn scratch_copy(root: &Path) -> Result<tempfile::TempDir> {
         if ft.is_symlink() {
             continue;
         }
-        let rel = entry.path().strip_prefix(root).map_err(|e| PassengerError::Path(e.to_string()))?;
+        let rel = entry.path().strip_prefix(root).map_err(|e| PassengerError::path(e.to_string()))?;
         let target = dir.path().join(rel);
         if ft.is_dir() {
             std::fs::create_dir_all(&target)?;

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "code_passenger workspace features v1",
+  "description": "A workspace's features, declared once for every crate: each workspace feature's dependencies by crate, the workspace default, and each crate's own lines.",
+  "type": "object",
+  "required": [
+    "features"
+  ],
+  "properties": {
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The one block of the document.",
+      "x-toml": "(the document)",
+      "properties": {
+        "default": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The workspace features on by default, in every crate that has them. Absent: each crate's default list stays as it is.",
+          "x-toml": "default",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "A workspace feature on by default. Repeats: one value per line, in order.",
+              "x-toml": "default = [\"<feature>\", ...]"
+            }
+          }
+        },
+        "feature": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One workspace feature. Repeats: one block per feature.",
+          "x-toml": "[features.<name>]",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "The feature's name, the same in every crate.",
+              "x-toml": "<name>"
+            },
+            "dep": {
+              "type": "string",
+              "description": "`<crate>:<dependency>`: the crate gets the feature, and the dependency becomes optional behind it. Repeats: one value per line, in order.",
+              "x-toml": "deps = [\"<crate>:<dependency>\", ...]"
+            }
+          }
+        },
+        "crate": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One crate's own lines. Repeats: one block per crate.",
+          "x-toml": "[crates.<name>]",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "The crate, by its package name.",
+              "x-toml": "<name>"
+            },
+            "default": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "The crate's default list as Cargo spells it, replacing the derived one.",
+              "x-toml": "default",
+              "properties": {
+                "feature": {
+                  "type": "string",
+                  "description": "One entry of the crate's default list. Repeats: one value per line, in order.",
+                  "x-toml": "default = [\"<entry>\", ...]"
+                }
+              }
+            },
+            "optional": {
+              "type": "string",
+              "description": "A dependency made optional with no workspace feature (Cargo's implicit feature). Repeats: one value per line, in order.",
+              "x-toml": "optional = [\"<dependency>\", ...]"
+            },
+            "feature": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "One feature's whole list in this crate, as Cargo spells it; it replaces the derived list, in this order. Repeats: one block per feature.",
+              "x-toml": "[crates.<name>.features]",
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "The feature.",
+                  "x-toml": "<feature>"
+                },
+                "enable": {
+                  "type": "string",
+                  "description": "One entry of the list: `dep:x`, `x/feat`, `x?/feat` or another feature. Repeats: one value per line, in order.",
+                  "x-toml": "<feature> = [\"<entry>\", ...]"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

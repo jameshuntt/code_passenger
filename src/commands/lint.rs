@@ -14,7 +14,7 @@ pub fn run(root: &Path, policy: Option<&Path>) -> Result<Verdict> {
         Some(p) => std::fs::read_to_string(p)?,
         None => DEFAULT_POLICY.to_string(),
     };
-    let policy = Policy::parse(&text).map_err(|e| PassengerError::Unsupported(e.to_string()))?;
+    let policy = Policy::parse(&text).map_err(|e| PassengerError::unsupported(e.to_string()))?;
     let k = klepto_for(root)?;
     Ok(run_pipeline(&k, &policy))
 }

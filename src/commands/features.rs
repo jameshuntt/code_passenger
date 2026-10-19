@@ -102,6 +102,11 @@ pub struct FeatureProbe {
     pub proposed: Vec<ProposedGate>,
     /// Sorted item ids the plan would gate, plus `reaches_public`.
     pub lost: Vec<String>,
+    /// With the feature off (or each feature turning the dependency on), per
+    /// crate, on the planned tree: the spec's plan, else the workspace
+    /// features document's, else the tree as it is.
+    #[serde(default)]
+    pub off: Vec<crate::depth::FeatureOff>,
     /// Always false: a probe reviews, it never writes.
     pub writes: bool,
 }
@@ -155,7 +160,7 @@ fn packages_for<'k>(k: &'k Klepto, package: Option<&str>) -> Result<Vec<(&'k Str
             k.features
                 .get_key_value(&p)
                 .map(|(n, m)| vec![(n, m)])
-                .ok_or_else(|| PassengerError::Unsupported(format!("no feature model for package `{p}`")))
+                .ok_or_else(|| PassengerError::unsupported(format!("no feature model for package `{p}`")))
         }
         None => Ok(k.features.iter().collect()),
     }
@@ -181,7 +186,24 @@ fn classify(k: &Klepto, package: Option<&str>, target: &str) -> Result<(String, 
             owners.push(name.clone());
         }
     }
-    let kind = kind.ok_or_else(|| PassengerError::Unsupported(format!("`{target}` is neither a dependency nor a feature of the scanned packages")))?;
+    if kind.is_none() {
+        // a workspace feature the document declares and the manifests do not have yet
+        let ws = crate::gate::workspace_root(k.root.as_deref().unwrap_or(Path::new(".")))?;
+        if let Some(found) = crate::doc::find(&ws)?
+            && let Some(f) = found.doc.features.get(&feature) {
+                kind = Some("feature".to_string());
+                for entry in &f.deps {
+                    let (krate, dep) = crate::doc::split_dep(entry)?;
+                    if package.is_none_or(|p| p.replace('-', "_") == krate) {
+                        deps.insert(dep);
+                        if !owners.contains(&krate) {
+                            owners.push(krate);
+                        }
+                    }
+                }
+            }
+    }
+    let kind = kind.ok_or_else(|| PassengerError::unsupported(format!("`{target}` is neither a dependency nor a feature of the scanned packages, nor a feature of the workspace features document")))?;
     Ok((kind, deps.into_iter().collect(), owners))
 }
 
@@ -256,19 +278,28 @@ pub fn feature_probe(root: &Path, package: Option<&str>, target: &str, spec: Opt
     let k = klepto_for(root)?;
     let (kind, deps, owners) = classify(&k, package, target)?;
     let receipt = Receipt::from_klepto(&k);
-    let spec_model = match spec {
-        Some(p) => Some(FeatureSpec::from_path(p).map_err(|e| PassengerError::Unsupported(e.to_string()))?),
-        None => None,
+    // without a spec, the workspace features document (if there is one) is what is reviewed
+    let ws = crate::gate::workspace_root(root)?;
+    let doc_plan = match spec {
+        Some(_) => None,
+        None => match crate::doc::find(&ws)? {
+            Some(found) => Some(crate::workspace::plan_static(&ws, &found.doc, Some(found.path), &k)?),
+            None => None,
+        },
+    };
+    let spec_model = match (spec, &doc_plan) {
+        (Some(p), _) => Some(FeatureSpec::from_path(p).map_err(|e| PassengerError::unsupported(e.to_string()))?),
+        (None, Some(w)) => Some(FeatureSpec { packages: w.packages.iter().map(|p| (p.package.clone(), p.spec.clone())).collect() }),
+        (None, None) => None,
     };
     let mut ungated = Vec::new();
-    let mut proposed = Vec::new();
-    let mut lost: BTreeSet<String> = BTreeSet::new();
+    let mut plans: Vec<klepto::GatePlan> = Vec::new();
     for owner in &owners {
         let Some(current) = k.feature_model(owner) else { continue };
         let desired = spec_model.as_ref().map(|s| current.apply_spec(&s.package(owner).cloned().unwrap_or_default()));
         let model = desired.as_ref().unwrap_or(current);
         for u in receipt.dep_uses.iter().filter(|u| &u.package == owner && deps.contains(&u.site.dep)) {
-            let required = model.dep_predicate(&u.site.dep).simplify();
+            let required = crate::workspace::minimize(model.dep_predicate(&u.site.dep).simplify(), model);
             let verdict = u.cfg.implies(&required, None);
             if matches!(verdict, Implication::Always) {
                 continue;
@@ -284,59 +315,98 @@ pub fn feature_probe(root: &Path, package: Option<&str>, target: &str, spec: Opt
             });
         }
         if let Some(desired) = &desired {
-            let plan = k.plan_gates(owner, desired);
-            // gates related to the target's deps, through cascades and violations
-            let mut related: BTreeSet<String> = plan
-                .gates
-                .iter()
-                .filter(|g| g.reasons.iter().any(|r| matches!(r, GateReason::UngatedDep { dep } if deps.contains(dep))))
-                .map(|g| g.item.clone())
-                .collect();
-            loop {
-                let before = related.len();
-                for g in &plan.gates {
-                    let linked = g.reasons.iter().any(|r| match r {
-                        GateReason::Cascade { from } => related.contains(from),
-                        GateReason::ExistingViolation { to } => related.contains(to),
-                        _ => false,
-                    });
-                    if linked {
-                        related.insert(g.item.clone());
-                    }
-                }
-                if related.len() == before {
-                    break;
-                }
-            }
-            for g in plan.gates.iter().filter(|g| related.contains(&g.item)) {
-                proposed.push(ProposedGate {
-                    item: g.item.clone(),
-                    file: relative(root, &g.location.path).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| g.location.path.display().to_string()),
-                    line: g.location.line,
-                    attribute: if g.existing_cfg == CfgPredicate::True {
-                        g.attribute_text()
-                    } else {
-                        crate::gate::merged_attribute(&g.existing_cfg, &g.predicate)
-                    },
-                });
-            }
-            lost.extend(plan.gates.iter().map(|g| g.item.clone()));
-            lost.extend(plan.reaches_public.iter().cloned());
+            // the document's plan carries the cross-crate gates; a spec's is klepto's per crate
+            let plan = doc_plan.as_ref().and_then(|w| w.packages.iter().find(|p| &p.package == owner)).map(|p| p.plan.clone()).unwrap_or_else(|| k.plan_gates(owner, desired));
+            plans.push(plan);
         }
+    }
+    // gates related to the target's deps, through cascades and violations, across crates
+    let mut related: BTreeSet<String> = plans
+        .iter()
+        .flat_map(|p| p.gates.iter())
+        .filter(|g| g.reasons.iter().any(|r| matches!(r, GateReason::UngatedDep { dep } if deps.contains(dep))))
+        .map(|g| g.item.clone())
+        .collect();
+    loop {
+        let before = related.len();
+        for g in plans.iter().flat_map(|p| p.gates.iter()) {
+            let linked = g.reasons.iter().any(|r| match r {
+                GateReason::Cascade { from } => related.contains(from),
+                GateReason::ExistingViolation { to } => related.contains(to),
+                _ => false,
+            });
+            if linked {
+                related.insert(g.item.clone());
+            }
+        }
+        if related.len() == before {
+            break;
+        }
+    }
+    let mut proposed = Vec::new();
+    let mut lost: BTreeSet<String> = BTreeSet::new();
+    for plan in &plans {
+        for g in plan.gates.iter().filter(|g| related.contains(&g.item)) {
+            proposed.push(ProposedGate {
+                item: g.item.clone(),
+                file: relative(root, &g.location.path).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| g.location.path.display().to_string()),
+                line: g.location.line,
+                attribute: if g.existing_cfg == CfgPredicate::True { g.attribute_text() } else { crate::gate::merged_attribute(&g.existing_cfg, &g.predicate) },
+            });
+        }
+        lost.extend(plan.gates.iter().map(|g| g.item.clone()));
+        lost.extend(plan.reaches_public.iter().cloned());
     }
     ungated.sort_by(|a, b| (&a.file, a.line, &a.scope).cmp(&(&b.file, b.line, &b.scope)));
     proposed.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
+    let all_off = match doc_plan {
+        Some(w) => w.off,
+        None => probe_off(root, &k, spec_model.as_ref(), &owners)?,
+    };
+    let off = all_off
+        .into_iter()
+        .filter(|o| owners.contains(&o.package) && if kind == "feature" { o.feature == target.trim() } else { deps.iter().any(|d| o.deps.contains(d)) })
+        .collect();
+    let spec_text = spec.map(|p| p.display().to_string()).or_else(|| crate::doc::find(&ws).ok().flatten().map(|f| f.path.display().to_string()));
     Ok(FeatureProbe {
         root: root_text(root),
         target: target.to_string(),
         kind,
         deps,
-        spec: spec.map(|p| p.display().to_string()),
+        spec: spec_text,
         ungated,
         proposed,
         lost: lost.into_iter().collect(),
+        off,
         writes: false,
     })
+}
+
+/// Every feature off, on the tree the probe reviews against.
+fn probe_off(root: &Path, k: &Klepto, spec: Option<&FeatureSpec>, owners: &[String]) -> Result<Vec<crate::depth::FeatureOff>> {
+    let ws = crate::gate::workspace_root(root)?;
+    if let Some(spec) = spec {
+        let mut desired = k.features.clone();
+        let mut plans = Vec::new();
+        for owner in owners {
+            let Some(current) = k.feature_model(owner) else { continue };
+            let d = current.apply_spec(&spec.package(owner).cloned().unwrap_or_default());
+            let plan = k.plan_gates(owner, &d);
+            plans.push(crate::workspace::PackagePlan {
+                package: owner.clone(),
+                manifest_path: k.packages.get(owner).map(|p| p.manifest_path.clone()).unwrap_or_default(),
+                spec: spec.package(owner).cloned().unwrap_or_default(),
+                plan,
+            });
+            desired.insert(owner.clone(), d);
+        }
+        let edits = crate::workspace::edits_of(&plans)?;
+        return crate::depth::feature_off(&ws, &desired, k, &edits);
+    }
+    if let Some(found) = crate::doc::find(&ws)? {
+        return Ok(crate::workspace::plan_static(&ws, &found.doc, Some(found.path), k)?.off);
+    }
+    crate::depth::feature_off(&ws, &k.features, k, &crate::gate::EditSet::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +462,7 @@ pub fn render_sites(x: &FeatureSites) -> String {
 pub fn render_probe(p: &FeatureProbe) -> String {
     let mut s = String::new();
     s.push_str("CODE PASSENGER :: FEATURE PROBE\n───────────────────────────────\n");
-    s.push_str(&format!("root: {}\ntarget: {}\nkind: {}\ndeps: [{}]\nspec: {}\n\n", p.root, p.target, p.kind, p.deps.join(", "), p.spec.as_deref().unwrap_or("<current manifest>")));
+    s.push_str(&format!("root: {}\ntarget: {}\nkind: {}\ndeps: [{}]\nspec: {}\n\n", p.root, p.target, p.kind, p.deps.join(", "), p.spec.as_deref().unwrap_or("<current manifests>")));
     s.push_str(&format!("ungated: {}\n", p.ungated.len()));
     for u in &p.ungated {
         let line = u.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into());
@@ -407,6 +477,7 @@ pub fn render_probe(p: &FeatureProbe) -> String {
     for l in &p.lost {
         s.push_str(&format!("  {l}\n"));
     }
+    s.push_str(&crate::depth::render(&p.off));
     s.push_str("writes: false\n");
     s
 }
