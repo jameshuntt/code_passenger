@@ -2,6 +2,7 @@
 name = "code_passenger"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.90"
 
 license = "MIT OR Apache-2.0"
 description = "Scans a Rust workspace with klepto and does the writing: feature gates across every crate from one features document, proven by cargo check, Cargo.toml edits, file headers from the plan, and the history of it."

@@ -282,3 +282,12 @@ code-passenger patterns --root . --top 20                     # repeated code: e
   downloaded and nothing outside the scratch copy is touched.
 - edits inside macro bodies are out of scope; carriers klepto cannot name
   are listed under `unknown` and a person decides.
+
+###
+---
+
+### releasing
+
+Bump `version` in Cargo.toml and give CHANGELOG.md a dated `## <version> (YYYY-MM-DD)` entry, then push to main.
+CI (`.github/workflows/ci.yml`) tests on stable and Rust 1.90, runs clippy, and publishes to crates.io
+through trusted publishing; a version already on crates.io, or an entry still marked `(unreleased)`, publishes nothing.
