@@ -516,6 +516,8 @@ dependencies = [
 [[package]]
 name = "custodian_kit"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7e87f46d541a19ea8c008875c468183beffc48f597e19e026965ce2690cc24a"
 dependencies = [
  "big-bad-bool",
  "bundles",
