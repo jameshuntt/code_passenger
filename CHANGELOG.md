@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 (2026-10-19)
+
+code_passenger on custodian_kit 0.3.0. In 0.3.0 the kit's journal is
+receipt_history's, and its \`put_job\` returns receipt_history's error. That
+error converts into the kit's \`CustodianError\`. The two job-row writes now
+convert it before they read it as the passenger's error: [src/agent.rs#L226](https://github.com/jameshuntt/code_passenger/blob/112543105d98754d2be57decafee29165021e4e6/src/agent.rs#L226)
+and [src/agent.rs#L279](https://github.com/jameshuntt/code_passenger/blob/112543105d98754d2be57decafee29165021e4e6/src/agent.rs#L279). The custodian_kit requirement is 0.3.0
+([Cargo.toml#L48](https://github.com/jameshuntt/code_passenger/blob/112543105d98754d2be57decafee29165021e4e6/Cargo.toml#L48)). Nothing else changes. Every link is pinned to 1125431.
+
+Proof: \`cargo test\`, the 47 tests of 0.4.0, against custodian_kit 0.3.0.
+
 ## 0.4.0 (2026-10-19)
 
 custodian's bounded jobs write no code by hand: the agent writes a change
