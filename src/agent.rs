@@ -294,6 +294,7 @@ pub fn run(root: &Path, which: Option<&str>, exe: &Path) -> Result<(Closing, Pat
         job: Some(id),
         reused_seq: None,
         millis: 0,
+        runner: custodian_kit::receipts::line_runner(),
     };
     keep(&store, r).map_err(custodian)?;
     Ok((closing, done))
