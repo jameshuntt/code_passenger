@@ -650,12 +650,16 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             if !f.attrs.iter().any(|a| a.trim() == "#[test]") {
                 f.attrs.insert(0, "#[test]".into());
             }
+            let module = spec.to.clone().unwrap_or_else(|| "tests".into());
             let t = p.tree.text(&file)?;
             let parsed = parse(t, &file)?;
             let tests = parsed.items.iter().find_map(|i| match i {
-                syn::Item::Mod(m) if m.ident == "tests" && m.content.is_some() => Some((i.span(), m.content.as_ref().map(|(b, _)| b.span.close().start()))),
+                syn::Item::Mod(m) if m.ident == module.as_str() && m.content.is_some() => Some((i.span(), m.content.as_ref().map(|(b, _)| b.span.close().start()))),
                 _ => None,
             });
+            if tests.is_none() && spec.to.is_some() {
+                return Err(refused(format!("{}: no inline module {module} to place the test in", land.file)));
+            }
             match tests {
                 Some((sp, Some(close))) => {
                     let indent = format!("{}    ", indent_of(t, sp.start().line));
@@ -673,7 +677,49 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                     p.generated.push(text);
                 }
             }
-            p.facts.push(format!("exists {}::tests::{}", land.module, f.name));
+            p.facts.push(format!("exists {}::{module}::{}", land.module, f.name));
+        }
+        ReplaceBody => {
+            let f = spec.function.as_ref().ok_or_else(|| refused("replace_body needs function"))?;
+            let old = k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            if f.name != ty_name(&item) {
+                return Err(refused(format!("{item}: the spec's function is {}, not this one", f.name)));
+            }
+            let t = p.tree.text(&file)?;
+            let sp = item_at(t, &file, line_of(&land.at))?;
+            let open = sp.body_open.ok_or_else(|| refused(format!("{item}: no body")))?;
+            // the body from its opening brace to the item's end (its closing brace); the signature, docs and
+            // attributes above it stay as they are
+            let lines: Vec<String> = t.lines().map(str::to_string).collect();
+            let lead = crate::gate::leading(&lines, sp.start.line - 1);
+            let body = change::render_body(f, &indent_of(t, lead.decl + 1)).map_err(refused)?;
+            let (a, b) = (offset(t, open), offset(t, sp.end));
+            if !t[a..b].ends_with('}') {
+                return Err(refused(format!("{item}: its body does not end at the item's end")));
+            }
+            t.replace_range(a..b, &body);
+            let first = body.lines().nth(1).unwrap_or("").trim().to_string();
+            p.generated.push(body);
+            p.facts.push(format!("args {item} {}", old.args.len()));
+            if !first.is_empty() {
+                p.facts.push(format!("text {} {first}", land.file));
+            }
+        }
+        ChangeDependency => {
+            for c in change::dependency_changes(k, root, spec).map_err(refused)? {
+                let path = abs(root, &c.manifest);
+                for d in spec.dependencies_named().into_iter().filter(|d| d.name.replace('-', "_") == c.name) {
+                    let (after, n) = crate::commands::edit::dep_change_text(p.tree.text(&path)?, &d.name, d.version.as_deref(), d.path.as_deref(), &d.features)?;
+                    if n == 0 {
+                        return Err(refused(format!("{}: names no {} to change", c.manifest, d.name)));
+                    }
+                    *p.tree.text(&path)? = after;
+                    // the manifest as the root names it, so the fact reads the scratch copy's
+                    let manifest = relative(root, &path).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| c.manifest.clone());
+                    p.facts.push(format!("source {manifest} {} {} {}", d.name, d.version.as_deref().unwrap_or("-"), d.path.as_deref().unwrap_or("-")));
+                    p.facts.push(format!("dependency {} {}", c.package, c.name));
+                }
+            }
         }
         ChangeSignature => {
             let f = spec.function.as_ref().ok_or_else(|| refused("change_signature needs function"))?;
@@ -892,6 +938,15 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
         ["dependency", p, d] => k.features.get(*p).is_some_and(|m| m.dependencies.iter().any(|x| x.name == *d)),
         ["args", id, n] => k.functions.iter().find(|f| f.fq_name == *id).is_some_and(|f| f.args.len().to_string() == *n),
         ["text", f, line] => std::fs::read_to_string(root.join(f)).is_ok_and(|t| t.lines().any(|l| l.trim() == line.trim())),
+        // `source <manifest> <dependency> <version|-> <path|->`: the manifest names it from there
+        ["source", f, rest] => {
+            let w: Vec<&str> = rest.split(' ').collect();
+            let want = |x: &str| (x != "-").then(|| x.to_string());
+            match w.as_slice() {
+                [name, version, path] => std::fs::read_to_string(root.join(f)).ok().and_then(|t| crate::commands::edit::dep_source(&t, name)) == Some((want(version), want(path))),
+                _ => false,
+            }
+        }
         _ => false,
     }
 }
@@ -948,7 +1003,14 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         said.push("cargo not run (--no-cargo)".into());
     } else {
         _held = None;
-        for pkg in checked_packages(&k, &land.package) {
+        let landed: Vec<String> = if spec.op() == Operation::ChangeDependency {
+            change::dependency_changes(&k, &root, &spec).map_err(refused)?.into_iter().map(|c| c.package).collect::<BTreeSet<_>>().into_iter().collect()
+        } else {
+            vec![land.package.clone()]
+        };
+        let packages: BTreeSet<String> = landed.iter().flat_map(|p| checked_packages(&k, p)).collect();
+        said.push(format!("cargo check over {} packages (the ones it lands in and every one that depends on them)", packages.len()));
+        for pkg in packages {
             let Some(model) = k.features.get(&pkg) else { continue };
             let mut desired = model.clone();
             // the new dependency is in the edited manifest, not in the model read before the edit

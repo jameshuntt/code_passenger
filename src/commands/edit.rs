@@ -220,6 +220,112 @@ pub fn dep_add_plan(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>
     Ok(Edited { root, edits, written, said })
 }
 
+/// The dependency tables of a manifest that can name a dependency: `[dependencies]`, `[dev-dependencies]`,
+/// `[build-dependencies]`, and each `[target.<cfg>.*]` of them.
+const DEP_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+fn same_crate(a: &str, b: &str) -> bool {
+    a.replace('-', "_") == b.replace('-', "_")
+}
+
+/// One entry changed to the source asked: a version alone is the registry's (the path dropped; a bare `"x.y"` when
+/// nothing else is on the entry), a path with or without a version; features given replace its features. Refused
+/// for an entry that takes its source from `[workspace.dependencies]`.
+fn change_entry(entry: &mut toml_edit::Item, version: Option<&str>, path: Option<&str>, features: &[String]) -> std::result::Result<(), String> {
+    if entry.as_table_like().is_some_and(|t| t.get("workspace").and_then(|w| w.as_bool()) == Some(true)) {
+        return Err("its source is the workspace table's (`workspace = true`): change it there".into());
+    }
+    let others = entry.as_table_like().map(|t| t.iter().filter(|(k, _)| !matches!(*k, "version" | "path")).count()).unwrap_or(0);
+    if let (None, true, 0, Some(v)) = (path, features.is_empty(), others, version) {
+        let decor = entry.as_value().map(|x| x.decor().clone());
+        *entry = toml_edit::value(v);
+        if let (Some(d), Some(x)) = (decor, entry.as_value_mut()) {
+            *x.decor_mut() = d;
+        }
+        return Ok(());
+    }
+    let t = as_table(entry);
+    match version {
+        Some(v) => {
+            t.insert("version", toml_edit::value(v));
+        }
+        None => {
+            t.remove("version");
+        }
+    }
+    match path {
+        Some(p) => {
+            t.insert("path", toml_edit::value(p));
+        }
+        None => {
+            t.remove("path");
+        }
+    }
+    if !features.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for f in features {
+            arr.push(f.as_str());
+        }
+        t.insert("features", toml_edit::value(arr));
+    }
+    Ok(())
+}
+
+/// A manifest's text with every entry naming `name` (its key, or its `package = ..`) in its dependency tables
+/// changed to the source asked ([`change_entry`]); the text after and how many entries it changed.
+pub fn dep_change_text(text: &str, name: &str, version: Option<&str>, path: Option<&str>, features: &[String]) -> Result<(String, usize)> {
+    if version.is_none() && path.is_none() {
+        return Err(PassengerError::DepVersion { detail: format!("change {name} to what: give its version, its path, or both") });
+    }
+    let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| PassengerError::toml(e.to_string()))?;
+    let mut changed = 0;
+    let mut change_in = |deps: &mut dyn toml_edit::TableLike| -> Result<()> {
+        let keys: Vec<String> = deps.iter().filter(|(k, v)| same_crate(k, name) || v.as_table_like().and_then(|t| t.get("package")).and_then(|p| p.as_str()).is_some_and(|p| same_crate(p, name))).map(|(k, _)| k.to_string()).collect();
+        for k in keys {
+            let entry = deps.get_mut(&k).expect("the key was just listed");
+            change_entry(entry, version, path, features).map_err(|why| PassengerError::DepVersion { detail: format!("{k}: {why}") })?;
+            changed += 1;
+        }
+        Ok(())
+    };
+    for table in DEP_TABLES {
+        if let Some(deps) = doc.get_mut(table).and_then(|d| d.as_table_like_mut()) {
+            change_in(deps)?;
+        }
+    }
+    if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_like_mut()) {
+        for (_, cfg) in targets.iter_mut() {
+            for table in DEP_TABLES {
+                if let Some(deps) = cfg.as_table_like_mut().and_then(|c| c.get_mut(table)).and_then(|d| d.as_table_like_mut()) {
+                    change_in(deps)?;
+                }
+            }
+        }
+    }
+    Ok((doc.to_string(), changed))
+}
+
+/// A dependency's source as a manifest names it in its first dependency table that has it: (version, path).
+pub fn dep_source(text: &str, name: &str) -> Option<(Option<String>, Option<String>)> {
+    let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let tables = DEP_TABLES.iter().filter_map(|t| doc.get(t).and_then(|d| d.as_table_like())).collect::<Vec<_>>();
+    for deps in tables {
+        for (k, v) in deps.iter() {
+            let pkg = v.as_table_like().and_then(|t| t.get("package")).and_then(|p| p.as_str());
+            if same_crate(k, name) || pkg.is_some_and(|p| same_crate(p, name)) {
+                return Some(match v.as_str() {
+                    Some(ver) => (Some(ver.to_string()), None),
+                    None => {
+                        let t = v.as_table_like()?;
+                        (t.get("version").and_then(|x| x.as_str()).map(str::to_string), t.get("path").and_then(|x| x.as_str()).map(str::to_string))
+                    }
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Whether a feature list names `dep` (`dep:x`, `x/f`, `x?/f`, `x`).
 fn named_by_features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {
     let mut out = Vec::new();

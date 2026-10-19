@@ -228,7 +228,10 @@ match over them is exhaustive: `make_struct`, `make_enum`, `make_impl`,
 `add_method`, `make_fn`, `add_field`, `add_variant`, `add_derive`,
 `add_attribute`, `add_module`, `add_dependency` (through `dep add`),
 `add_test`, `add_constructor`, `add_trait_impl`, `change_signature`,
-`rename`, `move`, `extract`, `gate` and `anchor`. custodian_kit says where
+`rename`, `move`, `extract`, `gate`, `anchor`, `replace_body` (the body
+from its opening brace to its closing one, the signature kept) and
+`change_dependency` (through toml_edit, every dependency table of every
+manifest naming it, the other keys of an entry kept). custodian_kit says where
 each lands and renders the text; this crate finds the exact place with syn
 (the item's span from klepto's line), and cascades where the operation says
 so: every struct literal gets a new field's default, every call a new

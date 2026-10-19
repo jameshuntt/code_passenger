@@ -252,3 +252,91 @@ fn make_fn_and_make_impl_from_pieces() {
     apply(root, &spec(root, "state", "name = \"state\"\nobjective = \"o\"\noperation = \"make_impl\"\ntarget = \"shop::State\"\n\n[[functions]]\nname = \"is_open\"\nvis = \"pub\"\nreceiver = \"&self\"\nreturns = \"bool\"\n\n[[functions.body]]\npiece = \"value\"\nvalue = \"matches!(self, State::Open)\"\n"));
     assert!(read(root, "shop/src/lib.rs").contains("impl State {\n    pub fn is_open(&self) -> bool {\n        matches!(self, State::Open)\n    }\n}\n"));
 }
+
+#[test]
+fn replace_body_keeps_the_signature_and_docs_and_add_test_lands_in_the_module_named() {
+    let d = common::fresh_copy("transform_ws");
+    let root = d.path();
+    let before = read(root, "shop/src/lib.rs");
+    let o = apply(root, &spec(root, "new-checked", r#"name = "new-checked"
+objective = "an order's total kept as given, through a named binding"
+operation = "replace_body"
+target = "shop::Order::new"
+
+[function]
+name = "new"
+
+[[function.body]]
+piece = "let"
+bind = "order"
+value = "Order { id, total }"
+
+[[function.body]]
+piece = "value"
+value = "order"
+"#));
+    let t = read(root, "shop/src/lib.rs");
+    assert!(t.contains("    pub fn new(id: u32, total: u64) -> Self {\n        let order = Order { id, total };\n        order\n    }\n"), "{t}");
+    assert_eq!(t.lines().count(), before.lines().count() + 1, "one line more, nothing else moved");
+    assert!(o.record.postconditions.contains(&("args shop::Order::new 2".to_string(), true)), "{:?}", o.record.postconditions);
+    // a free function's body: a toolkit piece, simple_impl added to the crate it lands in
+    let o = apply(root, &spec(root, "version-checked", r#"name = "version-checked"
+objective = "o"
+operation = "replace_body"
+target = "shop::version"
+
+[function]
+name = "version"
+
+[[function.body]]
+piece = "let"
+bind = "one"
+value = "1"
+
+[[function.body]]
+piece = "push_if"
+collection = "&mut Vec::<u32>::new()"
+condition = "one > 0"
+value = "one"
+
+[[function.body]]
+piece = "value"
+value = "one"
+"#));
+    let t = read(root, "shop/src/lib.rs");
+    assert!(t.contains("pub fn version() -> u32 {\n    let one = 1;\n    simple_impl::push_if!(&mut Vec::<u32>::new(), one > 0 => one);\n    one\n}\n"), "{t}");
+    assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.11\""));
+    assert_eq!(o.record.files.len(), 2);
+    // the spec's function must be the target's own
+    let other = spec(root, "other", "name = \"other\"\nobjective = \"o\"\noperation = \"replace_body\"\ntarget = \"shop::version\"\n\n[function]\nname = \"label\"\n\n[[function.body]]\npiece = \"value\"\nvalue = \"2\"\n");
+    assert!(transform::run(root, &Options { spec: other, write: true, ..Options::default() }).is_err());
+    // a test in the inline module the spec names
+    let o = apply(root, &spec(root, "golden-two", "name = \"golden-two\"\nobjective = \"o\"\noperation = \"add_test\"\ntarget = \"shop::version\"\nto = \"golden\"\n\n[function]\nname = \"version_is_still_one\"\n\n[[function.body]]\npiece = \"raw\"\ncode = \"assert_eq!(version(), 1);\"\n"));
+    let t = read(root, "shop/src/lib.rs");
+    let golden = t.find("mod golden {").unwrap();
+    assert!(t[golden..].contains("    #[test]\n    fn version_is_still_one() {\n        assert_eq!(version(), 1);\n    }\n"), "{t}");
+    assert!(o.record.postconditions.contains(&("exists shop::golden::version_is_still_one".to_string(), true)), "{:?}", o.record.postconditions);
+    let missing = spec(root, "nowhere", "name = \"nowhere\"\nobjective = \"o\"\noperation = \"add_test\"\ntarget = \"shop::version\"\nto = \"absent\"\n\n[function]\nname = \"t\"\n");
+    assert!(transform::run(root, &Options { spec: missing, write: true, ..Options::default() }).is_err());
+}
+
+#[test]
+fn change_dependency_moves_every_crate_naming_it_and_keeps_what_else_the_entry_says() {
+    let d = common::fresh_copy("transform_ws");
+    let root = d.path();
+    let o = apply(root, &spec(root, "shop-versioned", "name = \"shop-versioned\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"*\"\n\n[[dependencies]]\nname = \"shop\"\nversion = \"0.1.0\"\npath = \"../shop\"\n"));
+    assert!(read(root, "app/Cargo.toml").contains("shop = { path = \"../shop\", version = \"0.1.0\" }"), "{}", read(root, "app/Cargo.toml"));
+    assert!(o.record.postconditions.contains(&("source app/Cargo.toml shop 0.1.0 ../shop".to_string(), true)), "{:?}", o.record.postconditions);
+    assert_eq!(o.record.files.len(), 1);
+    // the text rule: a version alone is the registry's, the path dropped, a bare string when nothing else is on it;
+    // features given replace the entry's; every dependency table, a target's too, and a renamed package
+    let text = "[dependencies]\nx = { path = \"../x\" } # the copy\ny = { path = \"../y\", features = [\"a\"], optional = true }\n\n[dev-dependencies]\nx = { version = \"0.1\", path = \"../x\" }\n\n[target.'cfg(unix)'.dependencies]\nz = { package = \"x\", path = \"../x\" }\n";
+    let (after, n) = code_passenger::commands::edit::dep_change_text(text, "x", Some("0.3.1"), None, &[]).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(after, "[dependencies]\nx = \"0.3.1\" # the copy\ny = { path = \"../y\", features = [\"a\"], optional = true }\n\n[dev-dependencies]\nx = \"0.3.1\"\n\n[target.'cfg(unix)'.dependencies]\nz = { package = \"x\", version = \"0.3.1\" }\n");
+    let (after, _) = code_passenger::commands::edit::dep_change_text(text, "y", Some("0.2"), None, &["b".into()]).unwrap();
+    assert!(after.contains("y = { features = [\"b\"], optional = true , version = \"0.2\" }") || after.contains("version = \"0.2\""), "{after}");
+    assert!(!after.contains("../y"));
+    assert!(code_passenger::commands::edit::dep_change_text("[dependencies]\nx = { workspace = true }\n", "x", Some("1"), None, &[]).is_err());
+    assert_eq!(code_passenger::commands::edit::dep_source(&after, "x"), Some((None, Some("../x".into()))));
+}

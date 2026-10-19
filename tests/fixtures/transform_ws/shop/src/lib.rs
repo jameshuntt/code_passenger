@@ -40,3 +40,13 @@ mod tests {
         assert_eq!(Order::new(1, 5).total, 5);
     }
 }
+
+#[cfg(test)]
+mod golden {
+    use super::*;
+
+    #[test]
+    fn version_one() {
+        assert_eq!(version(), 1);
+    }
+}
