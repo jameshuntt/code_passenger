@@ -489,21 +489,24 @@ fn apply_checkpoints_and_checkout_writes_the_snapshot_back() {
 // ---------------------------------------------------------------- agent mode
 
 #[test]
-fn agent_init_creates_the_job_layout_and_runs_the_features_job() {
+fn agent_init_creates_the_job_layout_and_runs_the_features_apply_job() {
     let copy = fresh_copy("ws_features");
     let root = copy.path();
     let (store, made) = code_passenger::agent::init(root).expect("agent init");
     for dir in [".custodian/state/jobs/queued", ".custodian/state/jobs/running", ".custodian/state/jobs/done", ".custodian/data/receipts"] {
         assert!(root.join(dir).is_dir(), "{dir}");
     }
-    let template = root.join(".custodian/config/jobs/features.toml");
-    assert!(made.contains(&template.canonicalize().unwrap()) || made.iter().any(|p| p.ends_with("config/jobs/features.toml")));
+    let template = root.join(".custodian/config/jobs/features-apply.toml");
+    assert!(made.contains(&template.canonicalize().unwrap()) || made.iter().any(|p| p.ends_with("config/jobs/features-apply.toml")));
+    // `features` is custodian_kit's reading job, its template the kit's: left as the kit wrote it
+    let kits = read(&root.join(".custodian/config/jobs/features.toml"));
+    assert_eq!(kits, custodian_kit::jobs::FEATURES, "the kit's features template, untouched");
     let t: code_passenger::agent::JobTemplate = toml::from_str(&read(&template)).unwrap();
     let steps: Vec<(&str, &str, Option<&str>)> = t.step.iter().map(|s| (s.name.as_str(), s.line.as_str(), s.reads.as_deref())).collect();
     assert_eq!(steps, vec![("plan", "features-plan", None), ("apply", "features-apply", Some("plan")), ("annotate", "annotate", Some("apply"))]);
     assert!(root.join(".custodian/state/journal.sqlite").is_file());
 
-    let queued = code_passenger::agent::queue(root, "features", Some("gate-log")).unwrap();
+    let queued = code_passenger::agent::queue(root, "features-apply", Some("gate-log")).unwrap();
     assert!(queued.join("job.toml").is_file());
     let exe = Path::new(env!("CARGO_BIN_EXE_code-passenger"));
     let (closing, done) = code_passenger::agent::run(root, Some("gate-log"), exe).expect("agent run");

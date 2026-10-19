@@ -159,12 +159,17 @@ hold is left as it is.
 ### agent mode
 
 ```bash
-code-passenger agent init --root .     # custodian's .custodian/ layout, and the `features` job template
-code-passenger agent queue --root .    # a job folder in .custodian/state/jobs/queued/
+code-passenger agent init --root .     # custodian's .custodian/ layout, and the `features-apply` job template
+code-passenger agent queue --root .    # a features-apply job folder in .custodian/state/jobs/queued/ (--kind features-apply)
 code-passenger agent run --root .      # plan → apply → annotate, each step a receipt in the journal
 ```
 
-the `features` job is a folder that moves queued → running → done. its
+one template per kind. `features` is custodian_kit's job, written by its
+agent layout: the eligibility reading (public API, dependents, reach) that
+changes nothing. `features-apply` is code-passenger's, the job that edits,
+in `.custodian/config/jobs/features-apply.toml`.
+
+the `features-apply` job is a folder that moves queued → running → done. its
 steps are code-passenger lines started by custodian_kit's executor: the plan
 (proven, written into the folder), the apply of exactly that plan (it reads
 the plan step's receipt and refuses if the code changed since), and the

@@ -6,8 +6,10 @@
 //!
 //! - `agent init` makes custodian_kit's agent layout and writes the job
 //!   templates code-passenger runs into `config/jobs/<kind>.toml`, where they
-//!   are the user's to edit.
-//! - `agent queue [NAME] [--kind features]` drops a job folder into
+//!   are the user's to edit. One template per kind: custodian_kit's own
+//!   `features` (the eligibility reading: public API, dependents, reach) is
+//!   the kit's; code-passenger's job that edits is `features-apply`.
+//! - `agent queue [NAME] [--kind features-apply]` drops a job folder into
 //!   `jobs/queued/` (its `job.toml` names the kind).
 //! - `agent run [NAME]` moves the job to `jobs/running/`, runs the
 //!   template's steps in order (each step that `reads` another is given that
@@ -25,14 +27,19 @@ use custodian_kit::store::{named, write_whole, JobRow, JobState, Mode, Receipt, 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The job kinds code-passenger runs, written by `agent init`.
-pub const TEMPLATES: &[(&str, &str)] = &[("features", FEATURES)];
+/// The job kinds code-passenger runs, written by `agent init`. Not `features`:
+/// that kind is custodian_kit's reading job, and its template is the kit's.
+pub const TEMPLATES: &[(&str, &str)] = &[(FEATURES_APPLY_KIND, FEATURES_APPLY)];
 
-/// `features`: the workspace features document planned for every crate,
+/// The kind of the job that edits: plan, apply, annotate.
+pub const FEATURES_APPLY_KIND: &str = "features-apply";
+
+/// `features-apply`: the workspace features document planned for every crate,
 /// the proven plan applied, the headers written.
-pub const FEATURES: &str = r#"# features: plan every crate from the workspace features document (proven by cargo check),
+pub const FEATURES_APPLY: &str = r#"# features-apply: plan every crate from the workspace features document (proven by cargo check),
 # apply exactly that plan (refused if the code changed since), then write the headers it implies.
-kind = "features"
+# (custodian_kit's `features` job is the reading that judges eligibility; this is the job that edits.)
+kind = "features-apply"
 summary = "planned for every crate and proven; applied as planned; headers written from the plan"
 
 [[step]]
@@ -327,7 +334,7 @@ pub fn command(l: &AgentRooted<CodePassenger>, root: &Path, exe: &Path, out: &mu
             Ok(0)
         }
         "queue" => {
-            let kind = l.kind.as_ref().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "features".into());
+            let kind = l.kind.as_ref().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| FEATURES_APPLY_KIND.into());
             let dir = queue(root, &kind, name.as_deref())?;
             out.push_str(&format!("queued {}\n", dir.display()));
             outputs.push(dir.join("job.toml"));

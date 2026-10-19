@@ -414,7 +414,7 @@ pub struct Agent {
     #[builder(into)]
     #[arg(positional)]
     pub name: Option<OsString>,
-    /// The job kind (`queue`); `features` when not given.
+    /// The job kind (`queue`); `features-apply` when not given.
     #[builder(into)]
     #[arg(kv = "--kind")]
     pub kind: Option<OsString>,
