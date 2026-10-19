@@ -72,6 +72,15 @@ pub fn run_scan(ctx: &RunContext) -> Result<EngineOutput> {
     run_scan_on(ctx, &k)
 }
 
+/// `scan` for a checkpoint: a file klepto cannot parse is skipped and named
+/// (path, the parser's message) instead of refusing the whole scan. The
+/// snapshot keeps every tracked file by digest whether klepto parsed it or not.
+pub fn run_scan_skipping(ctx: &RunContext) -> Result<(EngineOutput, Vec<(PathBuf, String)>)> {
+    let k = crate::cargo::builder(&ctx.root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::unsupported(e.to_string()))?;
+    let out = run_scan_on(ctx, &k)?;
+    Ok((out, k.skipped_files.clone()))
+}
+
 /// `scan` over a parse already made.
 pub fn run_scan_on(ctx: &RunContext, k: &klepto::Klepto) -> Result<EngineOutput> {
     let packages: BTreeMap<String, ManifestInfo> = k.features.iter().map(|(n, m)| (n.clone(), manifest_info(m))).collect();

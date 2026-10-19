@@ -82,6 +82,10 @@ pub struct FileEntry {
     pub hash: String,   // sha256 hex
     pub bytes: u64,
     pub lines: u64,
+    /// klepto could not parse the file (the parser's message): its bytes are
+    /// kept by digest all the same; the scan beside the snapshot leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unparsed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

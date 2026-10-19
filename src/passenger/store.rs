@@ -84,11 +84,14 @@ pub struct CheckpointOptions {
     pub branch: Option<String>,
     /// Write scan.json and analysis.json beside the commit.
     pub include_artifacts: bool,
+    /// Files the scan skipped because klepto could not parse them (path, the
+    /// parser's message): each is marked `unparsed` in the snapshot.
+    pub unparsed: Vec<(PathBuf, String)>,
 }
 
 impl Default for CheckpointOptions {
     fn default() -> Self {
-        Self { note: None, branch: None, include_artifacts: true }
+        Self { note: None, branch: None, include_artifacts: true, unparsed: Vec::new() }
     }
 }
 
@@ -284,7 +287,12 @@ impl PassengerStore {
         *seq += 1;
         self.write_state(&st)?;
 
-        let manifest = self.build_full_manifest()?;
+        let mut manifest = self.build_full_manifest()?;
+        for (p, why) in &opts.unparsed {
+            if let Some(e) = self.rel(p).and_then(|r| manifest.files.get_mut(&r)) {
+                e.unparsed = Some(why.clone());
+            }
+        }
         let stats = self.compute_stats_delta(&cfg, parent_id.as_deref(), &manifest)?;
         let mut commit = PassengerCommit {
             schema: 2,
@@ -328,9 +336,9 @@ impl PassengerStore {
     /// every member, and with a features plan, the plan and the document.
     pub fn checkpoint_tree(&self, note: &str, plan: Option<&crate::workspace::WorkspacePlan>) -> Result<PassengerCommit> {
         let ctx = crate::engine::RunContext { root: self.root.clone(), src_rel: String::new(), manifest_path: self.root.join("Cargo.toml"), lang: "rust".into() };
-        let out = crate::engine::run_scan(&ctx)?;
+        let (out, unparsed) = crate::engine::run_scan_skipping(&ctx)?;
         let analysis = serde_json::to_value(crate::analysis::run(&out))?;
-        let commit = self.checkpoint(Some(&out), Some(&analysis), CheckpointOptions { note: Some(note.to_string()), ..Default::default() })?;
+        let commit = self.checkpoint(Some(&out), Some(&analysis), CheckpointOptions { note: Some(note.to_string()), unparsed, ..Default::default() })?;
         if let Some(plan) = plan {
             self.write_artifact(&commit.passenger_version, &commit.id, "plan.json", &serde_json::to_vec_pretty(plan)?)?;
             if let Some(doc) = &plan.doc {
@@ -403,7 +411,7 @@ impl PassengerStore {
         let bytes = fs::read(path)?;
         let hash = sha256_hex(&bytes);
         self.write_object_if_missing(&hash, &bytes)?;
-        Ok(FileEntry { hash, bytes: bytes.len() as u64, lines: count_lines_bytes(&bytes) as u64 })
+        Ok(FileEntry { hash, bytes: bytes.len() as u64, lines: count_lines_bytes(&bytes) as u64, unparsed: None })
     }
 
     fn object_path(&self, hash: &str) -> Result<PathBuf> {

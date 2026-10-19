@@ -562,3 +562,29 @@ fn every_command_is_a_declared_line() {
     assert_eq!(out.status.code(), Some(1), "check: work to do");
     assert!(String::from_utf8_lossy(&out.stdout).contains("CODE PASSENGER :: FEATURES CHECK"));
 }
+
+#[test]
+fn a_checkpoint_keeps_a_file_klepto_cannot_parse_by_digest_and_says_so() {
+    let copy = fresh_copy("ws_unparsed");
+    let root = copy.path();
+    let exe = env!("CARGO_BIN_EXE_code-passenger");
+    let init = std::process::Command::new(exe).args(["passenger", "init", "--root"]).arg(root).output().unwrap();
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    let out = std::process::Command::new(exe).args(["passenger", "checkpoint", "--root"]).arg(root).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{said}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(said.contains("checkpoint S000001 on main"), "{said}");
+    assert!(said.contains("note: klepto could not parse app/src/broken.rs; kept by digest, marked unparsed"), "{said}");
+
+    let store = PassengerStore::open(root).unwrap();
+    let head = store.resolve_head().unwrap();
+    let c = store.read_commit(&head.passenger_version, "S000001").unwrap();
+    let broken = &c.manifest.files["app/src/broken.rs"];
+    assert!(broken.unparsed.is_some(), "marked unparsed");
+    let bytes = std::fs::read(root.join("app/src/broken.rs")).unwrap();
+    assert_eq!(broken.hash, stable_digest::StableDigest::sha256(&bytes).as_str(), "its bytes kept by digest");
+    assert!(c.manifest.files["app/src/lib.rs"].unparsed.is_none());
+    let scan = read(&root.join(".passenger/data/V0.1.0/artifacts/S000001/scan.json"));
+    assert!(scan.contains("app/src/lib.rs") || scan.contains("lib.rs"), "the parsed file is in the scan");
+    assert!(!scan.contains("broken.rs"), "the unparsed one is not");
+}

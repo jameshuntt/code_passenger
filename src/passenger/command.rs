@@ -41,10 +41,13 @@ pub fn run(l: &PassengerRooted<CodePassenger>, root: &Path, out: &mut String) ->
         "checkpoint" => {
             let s = PassengerStore::open(root)?;
             let ctx = crate::engine::RunContext { root: s.root.clone(), src_rel: String::new(), manifest_path: s.root.join("Cargo.toml"), lang: "rust".into() };
-            let scan = crate::engine::run_scan(&ctx)?;
+            let (scan, unparsed) = crate::engine::run_scan_skipping(&ctx)?;
             let analysis = serde_json::to_value(crate::analysis::run(&scan))?;
-            let c = s.checkpoint(Some(&scan), Some(&analysis), CheckpointOptions { note: os(&l.note), branch: os(&l.branch), include_artifacts: !l.no_artifacts })?;
+            let c = s.checkpoint(Some(&scan), Some(&analysis), CheckpointOptions { note: os(&l.note), branch: os(&l.branch), include_artifacts: !l.no_artifacts, unparsed })?;
             out.push_str(&format!("checkpoint {} on {}\n", c.id, c.branch));
+            for (f, e) in c.manifest.files.iter().filter_map(|(f, e)| e.unparsed.as_ref().map(|why| (f, why))) {
+                out.push_str(&format!("note: klepto could not parse {f}; kept by digest, marked unparsed, left out of the scan: {e}\n"));
+            }
         }
         "log" => {
             let s = PassengerStore::open(root)?;
