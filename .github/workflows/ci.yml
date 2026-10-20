@@ -40,6 +40,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - name: cargo-expand (to-toolkit proves a swap by expanding the function before and after)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-expand
       - name: Test
         # the committed Cargo.lock: the oldest Rust builds the same tree rust-version was checked against
         run: cargo test --locked --all-features
