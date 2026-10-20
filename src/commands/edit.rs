@@ -94,6 +94,15 @@ fn features_array(t: &mut dyn toml_edit::TableLike, features: &[String]) {
     t.insert("features", toml_edit::value(arr));
 }
 
+/// An inline entry's spacing written as cargo writes it after a key is added or set: `{ version = "1", features =
+/// ["derive"], optional = true }`, never the `["derive"] , optional` a key appended after the last value's own
+/// spacing reads as. A table entry (`[dependencies.x]`) keeps its lines as they are.
+pub fn tidy_entry(item: &mut toml_edit::Item) {
+    if let Some(t) = item.as_inline_table_mut() {
+        t.fmt();
+    }
+}
+
 /// The entry as an inline table, a bare version string turned into `{ version = .. }`.
 fn as_table(item: &mut toml_edit::Item) -> &mut dyn toml_edit::TableLike {
     if let Some(v) = item.as_str().map(str::to_string) {
@@ -176,6 +185,7 @@ pub fn dep_add_plan(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>
         t.remove("path");
         t.insert("workspace", toml_edit::value(true));
         features_array(t, features);
+        tidy_entry(entry);
         let after = doc.to_string();
         let mut files = Vec::new();
         if rafter != rbefore {
@@ -208,6 +218,7 @@ pub fn dep_add_plan(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>
         let t = as_table(entry);
         set_source(t, version.as_deref(), path_dep);
         features_array(t, features);
+        tidy_entry(entry);
     }
     let after = doc.to_string();
     let said = match (existed, after != before) {
@@ -268,6 +279,7 @@ fn change_entry(entry: &mut toml_edit::Item, version: Option<&str>, path: Option
         }
         t.insert("features", toml_edit::value(arr));
     }
+    tidy_entry(entry);
     Ok(())
 }
 
@@ -277,13 +289,24 @@ pub fn dep_change_text(text: &str, name: &str, version: Option<&str>, path: Opti
     if version.is_none() && path.is_none() {
         return Err(PassengerError::DepVersion { detail: format!("change {name} to what: give its version, its path, or both") });
     }
+    dep_change_text_with(text, name, version, path, features, None)
+}
+
+/// [`dep_change_text`], with `optional` set too (`Some(true)` optional, `Some(false)` required again); a change of
+/// `optional` alone keeps the entry's source.
+pub fn dep_change_text_with(text: &str, name: &str, version: Option<&str>, path: Option<&str>, features: &[String], optional: Option<bool>) -> Result<(String, usize)> {
+    if version.is_none() && path.is_none() && optional.is_none() {
+        return Err(PassengerError::DepVersion { detail: format!("change {name} to what: give its version, its path, optional, or more than one") });
+    }
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| PassengerError::toml(e.to_string()))?;
     let mut changed = 0;
     let mut change_in = |deps: &mut dyn toml_edit::TableLike| -> Result<()> {
         let keys: Vec<String> = deps.iter().filter(|(k, v)| same_crate(k, name) || v.as_table_like().and_then(|t| t.get("package")).and_then(|p| p.as_str()).is_some_and(|p| same_crate(p, name))).map(|(k, _)| k.to_string()).collect();
         for k in keys {
             let entry = deps.get_mut(&k).expect("the key was just listed");
-            change_entry(entry, version, path, features).map_err(|why| PassengerError::DepVersion { detail: format!("{k}: {why}") })?;
+            if version.is_some() || path.is_some() {
+                change_entry(entry, version, path, features).map_err(|why| PassengerError::DepVersion { detail: format!("{k}: {why}") })?;
+            }
             changed += 1;
         }
         Ok(())
@@ -302,7 +325,73 @@ pub fn dep_change_text(text: &str, name: &str, version: Option<&str>, path: Opti
             }
         }
     }
+    if let Some(o) = optional {
+        set_optional_in(&mut doc, name, o);
+    }
     Ok((doc.to_string(), changed))
+}
+
+/// Every entry naming `dep` (its key, `-` and `_` one) in a manifest's dependency tables and their `[target.*]`
+/// forms made optional, or required again (`optional = false` drops the key); how many entries it set.
+pub fn set_optional_in(doc: &mut toml_edit::DocumentMut, dep: &str, optional: bool) -> usize {
+    let mut hit = 0;
+    let mut visit = |tbl: &mut dyn toml_edit::TableLike| {
+        let keys: Vec<String> = tbl.iter().map(|(k, _)| k.to_string()).filter(|k| same_crate(k, dep)).collect();
+        for key in keys {
+            let Some(item) = tbl.get_mut(&key) else { continue };
+            if optional {
+                let t = as_table(item);
+                t.insert("optional", toml_edit::value(true));
+            } else if let Some(t) = item.as_table_like_mut() {
+                t.remove("optional");
+            }
+            tidy_entry(item);
+            hit += 1;
+        }
+    };
+    for table in DEP_TABLES {
+        if let Some(t) = doc.get_mut(table).and_then(|i| i.as_table_like_mut()) {
+            visit(t);
+        }
+    }
+    if let Some(targets) = doc.get_mut("target").and_then(|i| i.as_table_like_mut()) {
+        for (_, cfg) in targets.iter_mut() {
+            for table in DEP_TABLES {
+                if let Some(t) = cfg.as_table_like_mut().and_then(|c| c.get_mut(table)).and_then(|d| d.as_table_like_mut()) {
+                    visit(t);
+                }
+            }
+        }
+    }
+    hit
+}
+
+/// `[features] name = [enables]` set in a manifest (the table made when the crate has none, the feature's list
+/// replaced when it has one).
+pub fn set_feature_in(doc: &mut toml_edit::DocumentMut, name: &str, enables: &[String]) -> Result<()> {
+    if !doc.contains_key("features") {
+        doc["features"] = toml_edit::table();
+    }
+    let feats = doc["features"].as_table_like_mut().ok_or_else(|| PassengerError::toml("[features] is not a table"))?;
+    let mut arr = toml_edit::Array::new();
+    for e in enables {
+        arr.push(e.as_str());
+    }
+    feats.insert(name, toml_edit::value(arr));
+    Ok(())
+}
+
+/// `declare_feature`'s manifest: each dependency in `optional` made optional (a `dep:` entry takes only an optional
+/// dependency), then `[features] name = [enables]`; the text after.
+pub fn feature_declare_text(text: &str, name: &str, enables: &[String], optional: &[String]) -> Result<String> {
+    let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| PassengerError::toml(e.to_string()))?;
+    for d in optional {
+        if set_optional_in(&mut doc, d, true) == 0 {
+            return Err(PassengerError::unsupported(format!("dependency `{d}` is not declared in the manifest")));
+        }
+    }
+    set_feature_in(&mut doc, name, enables)?;
+    Ok(doc.to_string())
 }
 
 /// A dependency's source as a manifest names it in its first dependency table that has it: (version, path).

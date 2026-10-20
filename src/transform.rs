@@ -779,9 +779,16 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             };
             let e = crate::commands::edit::dep_add_plan(root, &land.package, &dep, d.path.as_deref(), &d.features, false)?;
             for f in e.edits.files {
-                p.tree.files.insert(f.path.clone(), (Some(f.before), f.after));
+                let after = match d.optional {
+                    Some(o) => crate::commands::edit::dep_change_text_with(&f.after, &d.name, None, None, &[], Some(o))?.0,
+                    None => f.after,
+                };
+                p.tree.files.insert(f.path.clone(), (Some(f.before), after));
             }
             p.facts.push(format!("dependency {} {}", land.package, d.name));
+            if let Some(o) = d.optional {
+                p.facts.push(format!("optional {} {} {o}", land.package, d.name));
+            }
         }
         AddTest => {
             let f = spec.function.as_ref().ok_or_else(|| refused("add_test needs function"))?;
@@ -982,16 +989,34 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             for c in change::dependency_changes(k, root, spec).map_err(refused)? {
                 let path = abs(root, &c.manifest);
                 for d in spec.dependencies_named().into_iter().filter(|d| d.name.replace('-', "_") == c.name) {
-                    let (after, n) = crate::commands::edit::dep_change_text(p.tree.text(&path)?, &d.name, d.version.as_deref(), d.path.as_deref(), &d.features)?;
+                    let (after, n) = crate::commands::edit::dep_change_text_with(p.tree.text(&path)?, &d.name, d.version.as_deref(), d.path.as_deref(), &d.features, d.optional)?;
                     if n == 0 {
                         return Err(refused(format!("{}: names no {} to change", c.manifest, d.name)));
                     }
                     *p.tree.text(&path)? = after;
                     // the manifest as the root names it, so the fact reads the scratch copy's
                     let manifest = relative(root, &path).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| c.manifest.clone());
-                    p.facts.push(format!("source {manifest} {} {} {}", d.name, d.version.as_deref().unwrap_or("-"), d.path.as_deref().unwrap_or("-")));
+                    if d.version.is_some() || d.path.is_some() {
+                        p.facts.push(format!("source {manifest} {} {} {}", d.name, d.version.as_deref().unwrap_or("-"), d.path.as_deref().unwrap_or("-")));
+                    }
                     p.facts.push(format!("dependency {} {}", c.package, c.name));
+                    if let Some(o) = d.optional {
+                        p.facts.push(format!("optional {} {} {o}", c.package, c.name));
+                    }
                 }
+            }
+        }
+        DeclareFeature => {
+            let d = change::feature_declaration(k, root, spec).map_err(refused)?;
+            if !d.problems.is_empty() {
+                return Err(refused(d.problems.join("; ")));
+            }
+            let path = abs(root, &land.file);
+            let after = crate::commands::edit::feature_declare_text(p.tree.text(&path)?, &d.feature, &d.enables, &d.made_optional)?;
+            *p.tree.text(&path)? = after;
+            p.facts.push(format!("feature {} {} {}", d.package, d.feature, d.enables.join(",")));
+            for n in &d.made_optional {
+                p.facts.push(format!("optional {} {n} true", d.package));
             }
         }
         ChangeSignature => {
@@ -1450,6 +1475,17 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
         ["module", m] => k.modules.get(m).is_some(),
         // a dependency's name as cargo reads it: `big-bad-bool` and `big_bad_bool` are one name
         ["dependency", p, d] => k.features.get(&p.replace('-', "_")).or_else(|| k.features.get(*p)).is_some_and(|m| m.dependencies.iter().any(|x| x.name.replace('-', "_") == d.replace('-', "_"))),
+        // `feature <package> <name> <enables,...>`: the crate declares it with that list
+        ["feature", p, rest] => {
+            let (name, list) = rest.split_once(' ').unwrap_or((rest, ""));
+            let want: Vec<String> = list.split(',').filter(|x| !x.is_empty()).map(|x| x.replace('-', "_")).collect();
+            k.features.get(&p.replace('-', "_")).and_then(|m| m.features.get(name)).is_some_and(|i| i.enables.iter().map(|e| enable_text(e).replace('-', "_")).collect::<Vec<_>>() == want)
+        }
+        // `optional <package> <dependency> <true|false>`
+        ["optional", p, rest] => {
+            let (d, o) = rest.split_once(' ').unwrap_or((rest, "true"));
+            k.features.get(&p.replace('-', "_")).is_some_and(|m| m.dependencies.iter().any(|x| x.name.replace('-', "_") == d.replace('-', "_") && x.optional.to_string() == o))
+        }
         // `calls <id> <n>`: how many calls klepto resolves to it
         ["calls", id, n] => k.calls.iter().filter(|c| matches!(&c.resolution, Some(klepto::Resolution::Local(x) | klepto::Resolution::External(x)) if x == id)).count().to_string() == *n,
         ["args", id, n] => k.functions.iter().find(|f| f.fq_name == *id).is_some_and(|f| f.args.len().to_string() == *n),
@@ -1464,6 +1500,41 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+/// A package's feature model as the change leaves its manifest: `declare_feature`'s feature and the dependencies it
+/// makes optional, and `optional` on `add_dependency`/`change_dependency` (cargo's implicit features read again).
+fn desired_model(model: &klepto::FeatureModel, spec: &ChangeSpec, k: &klepto::Klepto, root: &Path, pkg: &str) -> klepto::FeatureModel {
+    let mut m = model.clone();
+    let mut asked = klepto::PackageSpec::default();
+    match spec.op() {
+        Operation::DeclareFeature => {
+            if let Some(d) = change::feature_declaration(k, root, spec).ok().filter(|d| d.package == pkg) {
+                asked.features.insert(d.feature.clone(), d.enables.clone());
+                asked.optional.extend(d.made_optional.iter().cloned());
+            }
+        }
+        Operation::AddDependency | Operation::ChangeDependency => {
+            for d in spec.dependencies_named() {
+                if let Some(o) = d.optional {
+                    for x in m.dependencies.iter_mut().filter(|x| x.name == d.name.replace('-', "_")) {
+                        x.optional = o;
+                    }
+                }
+            }
+        }
+        _ => return m,
+    }
+    m = m.apply_spec(&asked);
+    m
+}
+
+fn enable_text(e: &klepto::FeatureEnable) -> String {
+    match e {
+        klepto::FeatureEnable::Feature(f) => f.clone(),
+        klepto::FeatureEnable::Dep(d) => format!("dep:{d}"),
+        klepto::FeatureEnable::DepFeature { dep, feature, weak } => format!("{dep}{}/{feature}", if *weak { "?" } else { "" }),
     }
 }
 
@@ -1529,9 +1600,9 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         said.push(format!("cargo check over {} packages (the ones it lands in and every one that depends on them)", packages.len()));
         for pkg in packages {
             let Some(model) = k.features.get(&pkg) else { continue };
-            let mut desired = model.clone();
-            // the new dependency is in the edited manifest, not in the model read before the edit
-            let _ = &mut desired;
+            // the configurations are the edited manifest's: a feature declared, a dependency made optional or
+            // required again, as the change leaves them
+            let desired = desired_model(model, &spec, &k, &root, &pkg);
             for job in klepto::check_matrix(&desired) {
                 let r = oracle.check_edits(&job, &edits);
                 let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());

@@ -261,72 +261,17 @@ fn string_array(items: &[String]) -> toml_edit::Array {
     a
 }
 
-fn set_optional(item: &mut toml_edit::Item) {
-    if let Some(s) = item.as_str().map(str::to_string) {
-        let mut t = toml_edit::InlineTable::new();
-        t.insert("version", toml_edit::Value::from(s.as_str()));
-        t.insert("optional", toml_edit::Value::from(true));
-        *item = toml_edit::value(t);
-    } else if let Some(t) = item.as_table_like_mut() {
-        t.insert("optional", toml_edit::value(true));
-    }
-}
-
-const DEP_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
-
-fn make_optional(doc: &mut toml_edit::DocumentMut, dep: &str) -> Result<()> {
-    let mut hit = false;
-    let mut visit = |tbl: &mut dyn toml_edit::TableLike| {
-        let keys: Vec<String> = tbl.iter().map(|(k, _)| k.to_string()).collect();
-        for key in keys {
-            if key.replace('-', "_") != dep {
-                continue;
-            }
-            if let Some(item) = tbl.get_mut(&key) {
-                set_optional(item);
-                hit = true;
-            }
-        }
-    };
-    for section in DEP_SECTIONS {
-        if let Some(t) = doc.get_mut(section).and_then(|i| i.as_table_like_mut()) {
-            visit(t);
-        }
-    }
-    if let Some(targets) = doc.get_mut("target").and_then(|i| i.as_table_like_mut()) {
-        let names: Vec<String> = targets.iter().map(|(k, _)| k.to_string()).collect();
-        for name in names {
-            if let Some(tt) = targets.get_mut(&name).and_then(|i| i.as_table_like_mut()) {
-                for section in DEP_SECTIONS {
-                    if let Some(t) = tt.get_mut(section).and_then(|i| i.as_table_like_mut()) {
-                        visit(t);
-                    }
-                }
-            }
-        }
-    }
-    if hit {
-        Ok(())
-    } else {
-        Err(PassengerError::unsupported(format!("dependency `{dep}` is not declared in the manifest")))
-    }
-}
-
 /// Rule A2.
 fn edit_manifest(before: &str, edits: &[ManifestEdit]) -> Result<String> {
     let mut doc: toml_edit::DocumentMut = before.parse().map_err(|e: toml_edit::TomlError| PassengerError::toml(e.to_string()))?;
     for e in edits {
         match e {
-            ManifestEdit::MakeOptional { dep } => make_optional(&mut doc, dep)?,
-            ManifestEdit::SetFeature { name, enables } => {
-                if !doc.contains_key("features") {
-                    doc["features"] = toml_edit::table();
+            ManifestEdit::MakeOptional { dep } => {
+                if crate::commands::edit::set_optional_in(&mut doc, dep, true) == 0 {
+                    return Err(PassengerError::unsupported(format!("dependency `{dep}` is not declared in the manifest")));
                 }
-                let feats = doc["features"]
-                    .as_table_like_mut()
-                    .ok_or_else(|| PassengerError::toml("[features] is not a table"))?;
-                feats.insert(name, toml_edit::value(string_array(enables)));
             }
+            ManifestEdit::SetFeature { name, enables } => crate::commands::edit::set_feature_in(&mut doc, name, enables)?,
             ManifestEdit::SetDefault { features } => {
                 if !doc.contains_key("features") {
                     doc["features"] = toml_edit::table();
