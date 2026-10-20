@@ -1045,6 +1045,20 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             let new_sig = change::signature(&sig);
             splices.entry(canon(&file)).or_default().push((a, b, format!("{new_sig} ")));
             p.generated.push(new_sig.clone());
+            // with a body: written in the same step, so a body that compiles only against the new signature (a
+            // `main` that now returns `Result`) is proved with it
+            if !f.body.is_empty() {
+                let body = change::render_body(f, &indent_of(&t, lead.decl + 1)).map_err(refused)?;
+                let end = offset(&t, sp.end);
+                if !t[offset(&t, open)..end].ends_with('}') {
+                    return Err(refused(format!("{item}: its body does not end at the item's end")));
+                }
+                splices.entry(canon(&file)).or_default().push((offset(&t, open), end, body.clone()));
+                if let Some(first) = body.lines().nth(1).map(str::trim).filter(|l| !l.is_empty()) {
+                    p.facts.push(format!("text {} {first}", land.file));
+                }
+                p.generated.push(body);
+            }
             // parameters, the receiver aside: klepto's args hold `self` too
             let added = f.params.len() > old.args.iter().filter(|a| !change::is_receiver(a)).count();
             let name = f.name.clone();

@@ -98,3 +98,14 @@ fn make_lib_gives_a_binary_only_crate_its_library() {
     transform::revert(root, o.record_file.as_ref().unwrap()).unwrap();
     assert!(!root.join("cli/src/lib.rs").exists());
 }
+
+#[test]
+fn change_signature_with_a_body_writes_both_in_one_step() {
+    // the pantry's `main` that now returns `Result`: its old body does not compile against the new signature, so the
+    // two are one change
+    let d = common::fresh_copy("transform_more");
+    let root = d.path();
+    apply(root, &spec(root, "fallible", "name = \"fallible\"\nobjective = \"o\"\noperation = \"change_signature\"\ntarget = \"shopcli::main\"\n\n[function]\nname = \"main\"\nreturns = \"Result<(), String>\"\nbody = [\n  { piece = \"let\", bind = \"v\", value = \"shop::version()\" },\n  { piece = \"ensure\", condition = \"v > 0\", error = \"\\\"no version\\\".to_string()\" },\n  { piece = \"value\", value = \"Ok(())\" },\n]\n"));
+    let main = std::fs::read_to_string(root.join("cli/src/main.rs")).unwrap();
+    assert_eq!(main, "fn main() -> Result<(), String> {\n    let v = shop::version();\n    simple_impl::ensure!(v > 0, \"no version\".to_string());\n    Ok(())\n}\n", "{main}");
+}
