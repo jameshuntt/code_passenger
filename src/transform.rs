@@ -1585,7 +1585,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     let land = change::landing(&k, &root, &spec).map_err(refused)?;
     let mut said = vec![format!("{} {}: lands {}", spec.op().as_str(), spec.name, land.line())];
     let planned = plan(&k, &root, &spec, &land)?;
-    let edits = planned.tree.edits();
+    let mut edits = planned.tree.edits();
     if edits.is_empty() {
         return Err(refused(format!("{}: nothing to write", spec.name)));
     }
@@ -1632,6 +1632,17 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
                 let ws = oracle.workspace().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
                 scratch_root = d.join(relative(&ws, &root).unwrap_or_default());
                 _held = None;
+                // a changed manifest changes the lock file: cargo's, from the proof, is written with the change, so
+                // the tree's lock names what its manifests name (a scan reads dependency macros through it, frozen)
+                if matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature) {
+                    if let Ok(after) = std::fs::read_to_string(d.join("Cargo.lock")) {
+                        let lock = ws.join("Cargo.lock");
+                        let before = std::fs::read_to_string(&lock).unwrap_or_default();
+                        if after != before && !edits.files.iter().any(|f| f.path == lock) {
+                            edits.files.push(crate::gate::FileEdit { path: lock, before, after });
+                        }
+                    }
+                }
             }
             None => {
                 // nothing was checked: the postconditions are still read on a copy the edits are written to, never
@@ -1663,7 +1674,11 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         .iter()
         .filter(|f| f.before != f.after || !f.path.exists())
         .map(|f| {
-            let created = !planned.tree.files.get(&f.path).is_some_and(|(b, _)| b.is_some());
+            let created = match planned.tree.files.get(&f.path) {
+                Some((b, _)) => b.is_none(),
+                // the lock file cargo wrote in the proof
+                None => !f.path.exists(),
+            };
             FileWrite {
                 path: relative(&root, &f.path).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
                 before: if created { "none".into() } else { hex(f.before.as_bytes()) },

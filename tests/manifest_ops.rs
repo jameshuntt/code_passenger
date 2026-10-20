@@ -61,8 +61,16 @@ fn a_feature_named_like_the_dependency_it_turns_on_is_written() {
 fn optional_on_add_dependency_and_change_dependency() {
     let d = common::fresh_copy("transform_more");
     let root = d.path();
-    apply(root, &spec(root, "marks", "name = \"marks\"\nobjective = \"o\"\noperation = \"add_dependency\"\ntarget = \"crate:shop\"\n\n[dependency]\nname = \"shop-marks\"\npath = \"../marks\"\noptional = true\n"));
+    let lock_before = std::fs::read_to_string(root.join("Cargo.lock")).unwrap_or_default();
+    let o = apply(root, &spec(root, "marks", "name = \"marks\"\nobjective = \"o\"\noperation = \"add_dependency\"\ntarget = \"crate:shop\"\n\n[dependency]\nname = \"shop-marks\"\npath = \"../marks\"\noptional = true\n"));
     assert!(manifest(root).contains("shop-marks = { path = \"../marks\", optional = true }\n"), "{}", manifest(root));
+    // the lock cargo wrote in the proof is written with the manifest: the tree's lock names the new dependency, so a
+    // frozen `cargo metadata` (how a scan finds dependency macros) reads it
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap();
+    assert!(lock != lock_before && lock.contains("[[package]]\nname = \"shop\"\nversion = \"0.1.0\"\ndependencies = [\n \"shop-marks\",\n]"), "{lock}");
+    assert!(o.record.files.iter().any(|f| f.path == "Cargo.lock"), "{:?}", o.record.files);
+    let frozen = std::process::Command::new("cargo").args(["metadata", "--frozen", "--format-version", "1"]).current_dir(root).output().unwrap();
+    assert!(frozen.status.success(), "{}", String::from_utf8_lossy(&frozen.stderr));
     let o = apply(root, &spec(root, "required", "name = \"required\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"crate:shop\"\n\n[dependency]\nname = \"shop-marks\"\noptional = false\n"));
     assert!(manifest(root).contains("shop-marks = { path = \"../marks\" }\n"), "the source kept, optional dropped: {}", manifest(root));
     assert!(o.record.postconditions.iter().any(|(p, h)| p == "optional shop shop_marks false" && *h), "{:?}", o.record.postconditions);
