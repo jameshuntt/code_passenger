@@ -771,6 +771,16 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                 p.facts.push(format!("exists {}::{n}", land.module));
             }
         }
+        MakeLib => {
+            let new = abs(root, &land.file);
+            if new.exists() {
+                return Err(refused(format!("{} already exists", land.file)));
+            }
+            let text = spec.module.as_ref().and_then(|m| m.doc.as_ref()).map(|d| d.lines().map(|l| format!("//! {l}\n")).collect::<String>()).unwrap_or_default();
+            p.tree.create(&new, text.clone())?;
+            p.generated.push(text);
+            p.facts.push(format!("library {}", land.package));
+        }
         AddDependency => {
             let d = spec.dependency.as_ref().ok_or_else(|| refused("add_dependency needs dependency"))?;
             let dep = match &d.version {
@@ -1473,6 +1483,8 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
         ["impl", t, tr] => k.impls_of(t).iter().any(|i| i.trait_.as_ref().is_some_and(|x| x.raw.rsplit("::").next().is_some_and(|n| tr.contains(n) || n.contains(tr.trim_start_matches("impl_")))) ),
         ["derive", t, d] => k.type_decl(t).is_some_and(|x| x.derives.iter().any(|r| matches!(r, klepto::Resolution::Local(p) | klepto::Resolution::External(p) if p.rsplit("::").next() == Some(d.rsplit("::").next().unwrap_or(d))) || matches!(r, klepto::Resolution::Unresolved { raw, .. } if raw.ends_with(*d)))),
         ["module", m] => k.modules.get(m).is_some(),
+        // `library <package>`: cargo builds a library for it
+        ["library", p] => k.packages.get(&p.replace('-', "_")).is_some_and(|x| x.targets.iter().any(|t| t.kind == "lib")),
         // a dependency's name as cargo reads it: `big-bad-bool` and `big_bad_bool` are one name
         ["dependency", p, d] => k.features.get(&p.replace('-', "_")).or_else(|| k.features.get(*p)).is_some_and(|m| m.dependencies.iter().any(|x| x.name.replace('-', "_") == d.replace('-', "_"))),
         // `feature <package> <name> <enables,...>`: the crate declares it with that list

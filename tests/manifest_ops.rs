@@ -77,3 +77,16 @@ fn a_key_added_to_an_inline_entry_keeps_cargos_spacing() {
     assert!(after.contains("chrono = { version = \"0.4\", optional = true }\n"), "{after}");
     assert!(after.ends_with("[features]\nchrono = [\"dep:chrono\"]\njson = [\"dep:serde\"]\n"), "{after}");
 }
+
+#[test]
+fn make_lib_gives_a_binary_only_crate_its_library() {
+    let d = common::fresh_copy("transform_more");
+    let root = d.path();
+    let o = apply(root, &spec(root, "lib", "name = \"lib\"\nobjective = \"o\"\noperation = \"make_lib\"\ntarget = \"crate:cli\"\n\n[module]\nname = \"lib\"\ndoc = \"What the shop's command line does.\"\n"));
+    assert_eq!(std::fs::read_to_string(root.join("cli/src/lib.rs")).unwrap(), "//! What the shop's command line does.\n");
+    assert!(o.record.postconditions.iter().any(|(p, h)| p == "library cli" && *h), "{:?}", o.record.postconditions);
+    assert!(std::fs::read_to_string(root.join("cli/src/main.rs")).unwrap().starts_with("fn main()") || !std::fs::read_to_string(root.join("cli/src/main.rs")).unwrap().contains("mod lib"), "the binary gets no `mod lib;`");
+    // reversible: the file it made is taken away again
+    transform::revert(root, o.record_file.as_ref().unwrap()).unwrap();
+    assert!(!root.join("cli/src/lib.rs").exists());
+}
