@@ -119,3 +119,40 @@ fn add_test_makes_the_module_it_is_asked_to_go_in() {
     assert!(lib.ends_with("#[cfg(test)]\nmod pantry_tests {\n    use super::*;\n\n    #[test]\n    fn version_is_one() {\n        assert_eq!(version(), 1);\n    }\n}\n"), "{lib}");
     assert!(o.record.postconditions.iter().any(|(p, h)| p == "exists shop::pantry_tests::version_is_one" && *h), "{:?}", o.record.postconditions);
 }
+
+/// tests/fixtures/feature_forms: p depends on a (and a on c), optionally on b; a declares x = ["c/z"].
+fn p_manifest(root: &Path) -> String {
+    std::fs::read_to_string(root.join("p/Cargo.toml")).unwrap()
+}
+
+#[test]
+fn declare_feature_writes_every_cargo_form_and_its_record_covers_the_lines_written() {
+    let d = common::fresh_copy("feature_forms");
+    let root = d.path();
+    let before = p_manifest(root);
+    let o = apply(root, &spec(root, "f", "name = \"f\"\nobjective = \"o\"\noperation = \"declare_feature\"\ntarget = \"crate:p\"\nfeature = \"f\"\nenables = [\"g\", \"a/x\", \"b?/y\", \"dep:b\"]\n"));
+    let after = p_manifest(root);
+    assert_eq!(after, before.clone() + "f = [\"g\", \"a/x\", \"b?/y\", \"dep:b\"]\n", "{after}");
+    // the record names exactly the line written, and every configuration of the new matrix compiled
+    let file = o.record.files.iter().find(|f| f.path == "p/Cargo.toml").unwrap();
+    let n = after.lines().count() as u32;
+    assert_eq!(file.lines, [(n, n)], "{:?}", file.lines);
+    assert!(o.record.checks.iter().any(|c| c.package == "p" && c.features.contains(&"f".to_string())), "{:?}", o.record.checks);
+    assert!(o.record.postconditions.iter().any(|(p, h)| p == "feature p f g,a/x,b?/y,dep:b" && *h), "{:?}", o.record.postconditions);
+    // refused at the transform too: a feature the dependency does not have, its real features named
+    let s = spec(root, "nope", "name = \"nope\"\nobjective = \"o\"\noperation = \"declare_feature\"\ntarget = \"crate:p\"\nfeature = \"nope\"\nenables = [\"a/y\"]\n");
+    let e = transform::run(root, &Options { spec: s, ..Options::default() }).map(|o| o.exit_code).unwrap_err();
+    assert!(e.to_string().contains("`a/y`: a has no feature y (its features: x)"), "{e}");
+}
+
+#[test]
+fn optional_keeps_a_dependencys_features_and_cargos_spacing() {
+    let d = common::fresh_copy("feature_forms");
+    let root = d.path();
+    apply(root, &spec(root, "c", "name = \"c\"\nobjective = \"o\"\noperation = \"add_dependency\"\ntarget = \"crate:p\"\n\n[dependency]\nname = \"c\"\npath = \"../c\"\nfeatures = [\"z\"]\noptional = true\n"));
+    assert!(p_manifest(root).contains("c = { path = \"../c\", features = [\"z\"], optional = true }\n"), "{}", p_manifest(root));
+    apply(root, &spec(root, "c2", "name = \"c2\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"crate:p\"\n\n[dependency]\nname = \"c\"\noptional = false\n"));
+    assert!(p_manifest(root).contains("c = { path = \"../c\", features = [\"z\"] }\n"), "{}", p_manifest(root));
+    apply(root, &spec(root, "b", "name = \"b\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"crate:p\"\n\n[dependency]\nname = \"b\"\noptional = false\n"));
+    assert!(p_manifest(root).contains("b = { path = \"../b\" }\n"), "{}", p_manifest(root));
+}

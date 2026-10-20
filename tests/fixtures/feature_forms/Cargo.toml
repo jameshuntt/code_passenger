@@ -1,0 +1,5 @@
+# declare_feature's forms: p depends on a (and a on c), optionally on b; a declares x = ["c/z"], c declares z,
+# b declares y.
+[workspace]
+resolver = "2"
+members = ["p", "a", "b", "c"]
