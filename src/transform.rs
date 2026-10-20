@@ -813,9 +813,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                 syn::Item::Mod(m) if m.ident == module.as_str() && m.content.is_some() => Some((i.span(), m.content.as_ref().map(|(b, _)| b.span.close().start()))),
                 _ => None,
             });
-            if tests.is_none() && spec.to.is_some() {
-                return Err(refused(format!("{}: no inline module {module} to place the test in", land.file)));
-            }
+            // a module the file does not have yet (`to`, else `tests`) is made: `#[cfg(test)] mod <name>` at its end
             match tests {
                 Some((sp, Some(close))) => {
                     let indent = format!("{}    ", indent_of(t, sp.start().line));
@@ -824,7 +822,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                     p.generated.push(text);
                 }
                 _ => {
-                    let text = format!("#[cfg(test)]\nmod tests {{\n    use super::*;\n\n{}}}\n", change::render_fn(&f, "    ").map_err(refused)?);
+                    let text = format!("#[cfg(test)]\nmod {module} {{\n    use super::*;\n\n{}}}\n", change::render_fn(&f, "    ").map_err(refused)?);
                     if !t.ends_with('\n') {
                         t.push('\n');
                     }

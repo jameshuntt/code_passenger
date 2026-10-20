@@ -109,3 +109,13 @@ fn change_signature_with_a_body_writes_both_in_one_step() {
     let main = std::fs::read_to_string(root.join("cli/src/main.rs")).unwrap();
     assert_eq!(main, "fn main() -> Result<(), String> {\n    let v = shop::version();\n    simple_impl::ensure!(v > 0, \"no version\".to_string());\n    Ok(())\n}\n", "{main}");
 }
+
+#[test]
+fn add_test_makes_the_module_it_is_asked_to_go_in() {
+    let d = common::fresh_copy("transform_more");
+    let root = d.path();
+    let o = apply(root, &spec(root, "t", "name = \"t\"\nobjective = \"o\"\noperation = \"add_test\"\ntarget = \"shop::version\"\nto = \"pantry_tests\"\n\n[function]\nname = \"version_is_one\"\nbody = [{ piece = \"raw\", code = \"assert_eq!(version(), 1);\" }]\n"));
+    let lib = std::fs::read_to_string(root.join("shop/src/lib.rs")).unwrap();
+    assert!(lib.ends_with("#[cfg(test)]\nmod pantry_tests {\n    use super::*;\n\n    #[test]\n    fn version_is_one() {\n        assert_eq!(version(), 1);\n    }\n}\n"), "{lib}");
+    assert!(o.record.postconditions.iter().any(|(p, h)| p == "exists shop::pantry_tests::version_is_one" && *h), "{:?}", o.record.postconditions);
+}
