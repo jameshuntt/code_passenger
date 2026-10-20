@@ -291,6 +291,8 @@ fn edit_manifest(before: &str, edits: &[ManifestEdit]) -> Result<String> {
 /// --workspace`). The scratch copy must hold the whole workspace or cargo
 /// refuses to build the member.
 pub fn workspace_root(root: &Path) -> Result<PathBuf> {
+    // James's battery rule, before any cargo line
+    custodian_kit::power::cargo_may_start()?;
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = std::process::Command::new(cargo)
         .args(["locate-project", "--workspace", "--message-format", "plain"])

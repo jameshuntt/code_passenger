@@ -162,6 +162,10 @@ impl CargoOracle {
         if let Err(e) = xccute_contract::ValidatedCommand::validate(&line) {
             return internal(format!("the cargo check line was refused: {e}"));
         }
+        // James's battery rule, before any cargo line
+        if let Err(e) = custodian_kit::power::cargo_may_start() {
+            return internal(e.to_string());
+        }
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let mut cmd = Command::new(cargo);
         cmd.args(xccute_contract::CompositeShellCommand::argv(&line));

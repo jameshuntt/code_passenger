@@ -1,6 +1,6 @@
 // Copyright © 2026 1o. All rights reserved.
 
-//! The proof's one place per workspace: a copy of its source at a path that does not change, and one build folder
+//! The proof's one place per workspace (custodian_kit's `proof_place`, the place custodian's test runs use too): a copy of its source at a path that does not change, and one build folder
 //! beside it, kept between proofs. A proof syncs the copy (only the files whose bytes differ are written, so cargo's
 //! fingerprints of everything else hold), writes its edits there, and runs cargo with `CARGO_TARGET_DIR` on the kept
 //! build: a crate whose source did not move is not compiled again. One proof at a time holds it (a lock file, let go
@@ -15,7 +15,6 @@ use crate::error::{PassengerError, Result};
 use crate::gate::EditSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 /// One run of `cargo test -p <package>` on the copy.
 #[derive(Debug, Clone)]
@@ -46,134 +45,53 @@ impl Compared {
     }
 }
 
-/// What every cargo line of a proof runs with besides its build folder: no debug info (a proof runs nothing under a
-/// debugger, and debug info is most of a test build's bytes).
-pub const PROOF_ENV: &[(&str, &str)] = &[("CARGO_PROFILE_DEV_DEBUG", "0"), ("CARGO_PROFILE_TEST_DEBUG", "0")];
+/// What every cargo line of a proof runs with besides its build folder: custodian_kit's, one for every line on the
+/// kept build (`custodian_kit::proof_place::PROOF_ENV`).
+pub const PROOF_ENV: &[(&str, &str)] = custodian_kit::proof_place::PROOF_ENV;
 
-/// The variable naming the proof's place.
-pub const PROOF_DIR_ENV: &str = "CODE_PASSENGER_PROOF_DIR";
+/// The variable naming the proof's place (`custodian_kit::proof_place::PROOF_DIR_ENV`).
+pub const PROOF_DIR_ENV: &str = custodian_kit::proof_place::PROOF_DIR_ENV;
 
-/// The proof's place for one workspace, held.
+/// The proof's place for one workspace, held: custodian_kit's `ProofPlace`, the one place and kept build that
+/// custodian's test runs use too.
 pub struct ProofDir {
-    workspace: PathBuf,
-    src: PathBuf,
-    target: PathBuf,
-    /// Held while the proof runs.
-    _lock: std::fs::File,
-}
-
-/// The proof places under `all` whose workspace no longer exists, taken away (each held first, so one in use stays).
-fn prune(all: &Path) {
-    let Ok(entries) = std::fs::read_dir(all) else { return };
-    for e in entries.flatten() {
-        let dir = e.path();
-        let Ok(ws) = std::fs::read_to_string(dir.join("workspace")) else { continue };
-        if Path::new(ws.trim()).exists() {
-            continue;
-        }
-        let Ok(lock) = std::fs::OpenOptions::new().write(true).open(dir.join("lock")) else { continue };
-        if lock.try_lock().is_ok() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
-}
-
-/// What the copy leaves out: the builds, git, the passenger store.
-fn skip_dir(name: &std::ffi::OsStr) -> bool {
-    name == "target" || name == ".git" || name == ".passenger"
+    place: custodian_kit::proof_place::ProofPlace,
 }
 
 impl ProofDir {
     /// The place for `workspace` (its root), held until dropped, the copy synced with the workspace as it is.
     pub fn take(workspace: &Path) -> Result<Self> {
-        let workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
-        let base = match std::env::var_os(PROOF_DIR_ENV) {
-            Some(d) => PathBuf::from(d),
-            None => {
-                let all = std::env::temp_dir().join("code_passenger-proof");
-                prune(&all);
-                let key = stable_digest::StableDigest::sha256(workspace.to_string_lossy().as_bytes()).as_str().chars().take(16).collect::<String>();
-                let name = workspace.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                all.join(format!("{name}-{key}"))
-            }
-        };
-        std::fs::create_dir_all(&base)?;
-        std::fs::write(base.join("workspace"), workspace.to_string_lossy().as_bytes())?;
-        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(base.join("lock"))?;
-        lock.lock().map_err(|e| PassengerError::Io { detail: format!("{}: {e}", base.join("lock").display()) })?;
-        let me = ProofDir { workspace, src: base.join("src"), target: base.join("target"), _lock: lock };
-        me.sync()?;
-        Ok(me)
+        Ok(ProofDir { place: custodian_kit::proof_place::ProofPlace::take(workspace)? })
     }
 
     /// The copy of the workspace's root.
     pub fn root(&self) -> &Path {
-        &self.src
+        self.place.root()
     }
 
     /// The kept build folder: every cargo line of a proof runs with it as `CARGO_TARGET_DIR`.
     pub fn target(&self) -> &Path {
-        &self.target
+        self.place.target()
     }
 
     /// The copy made the same as the workspace: a file whose bytes differ written, a file the workspace no longer
     /// has removed, nothing else touched.
     pub fn sync(&self) -> Result<()> {
-        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-        let walk = WalkDir::new(&self.workspace).into_iter().filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && skip_dir(e.file_name())));
-        for entry in walk.filter_map(|e| e.ok()) {
-            if entry.depth() == 0 || entry.file_type().is_symlink() {
-                continue;
-            }
-            let rel = entry.path().strip_prefix(&self.workspace).map_err(|e| PassengerError::path(e.to_string()))?.to_path_buf();
-            let to = self.src.join(&rel);
-            if entry.file_type().is_dir() {
-                std::fs::create_dir_all(&to)?;
-            } else if entry.file_type().is_file() {
-                let bytes = std::fs::read(entry.path())?;
-                if std::fs::read(&to).ok().as_deref() != Some(&bytes[..]) {
-                    if let Some(d) = to.parent() {
-                        std::fs::create_dir_all(d)?;
-                    }
-                    std::fs::write(&to, &bytes)?;
-                }
-            }
-            seen.insert(rel);
-        }
-        // what the workspace no longer has goes from the copy too (a file a proof made, a file deleted since)
-        let stale: Vec<PathBuf> = WalkDir::new(&self.src)
-            .contents_first(true)
-            .into_iter()
-            .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && skip_dir(e.file_name())))
-            .filter_map(|e| e.ok())
-            .filter(|e| e.depth() > 0)
-            .filter_map(|e| e.path().strip_prefix(&self.src).ok().map(Path::to_path_buf))
-            .filter(|rel| !seen.contains(rel))
-            .collect();
-        for rel in stale {
-            let p = self.src.join(&rel);
-            if p.is_dir() {
-                let _ = std::fs::remove_dir(&p);
-            } else {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-        Ok(())
+        Ok(self.place.sync()?)
     }
 
     /// Edits planned on the workspace written into the copy; the relative paths written.
     pub fn write(&self, edits: &EditSet) -> Result<Vec<PathBuf>> {
-        edits.write_to(&self.workspace, &self.src)
+        edits.write_to(self.place.workspace(), self.place.root())
     }
 
     /// Several functions of `package` as `cargo expand` gives them on the copy (one expansion, on the kept build),
     /// each in the toolkit's proof form, or `None` where the expansion has no such function; the line and its time.
     pub fn expand_fns(&self, package: &str, items: &[String]) -> Result<(BTreeMap<String, Option<String>>, String, i64)> {
         use custodian_kit::exec::{line, Cargo, Plan, Watch};
-        let l = Cargo::expand(self.src.join("Cargo.toml").as_os_str(), package).lib().ugly();
+        let l = Cargo::expand(self.root().join("Cargo.toml").as_os_str(), package).lib().ugly();
         let mut ln = line("expand", &l).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;
-        ln.env.push(("CARGO_TARGET_DIR".into(), self.target.display().to_string()));
-        ln.env.extend(PROOF_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        ln.env.extend(self.place.env());
         let shown = format!("cargo expand -p {package} --lib --ugly");
         let walked = Plan::new("proof-expand").then(ln).walk(Watch::Quiet, |_, _| {}).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;
         let w = walked.into_iter().next().ok_or_else(|| PassengerError::TransformRefused { detail: "cargo expand did not run".into() })?;
@@ -189,10 +107,9 @@ impl ProofDir {
     /// `cargo test -p <package>` on the copy, on the kept build.
     pub fn test(&self, package: &str) -> Result<TestRun> {
         use custodian_kit::exec::{line, Cargo, Plan, Watch};
-        let l = Cargo::test(self.src.join("Cargo.toml").as_os_str(), package);
+        let l = Cargo::test(self.root().join("Cargo.toml").as_os_str(), package);
         let mut ln = line("tests", &l).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?.going_on();
-        ln.env.push(("CARGO_TARGET_DIR".into(), self.target.display().to_string()));
-        ln.env.extend(PROOF_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        ln.env.extend(self.place.env());
         let walked = Plan::new("proof-tests").then(ln).walk(Watch::Quiet, |_, _| {}).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;
         let w = walked.into_iter().next().ok_or_else(|| PassengerError::TransformRefused { detail: "cargo test did not run".into() })?;
         let results = w.stdout.lines().chain(w.stderr.lines()).filter(|l| l.starts_with("test result:")).map(str::to_string).collect();
@@ -225,6 +142,6 @@ impl ProofDir {
 
     /// A path of the workspace as it is in the copy.
     pub fn in_copy(&self, path: &Path) -> Result<PathBuf> {
-        Ok(self.src.join(crate::gate::relative(&self.workspace, path)?))
+        Ok(self.root().join(crate::gate::relative(self.place.workspace(), path)?))
     }
 }
