@@ -377,6 +377,11 @@ impl<'ast> Visit<'ast> for Calls {
 
 /// The byte offset of the parenthesis that closes the one at `open`, strings and characters skipped.
 fn matching_paren(text: &str, open: usize) -> Option<usize> {
+    matching_close(text, open).filter(|i| text.as_bytes()[*i] == b')')
+}
+
+/// The byte offset of the bracket (`)`, `]` or `}`) that closes the one at `open`, strings and characters skipped.
+fn matching_close(text: &str, open: usize) -> Option<usize> {
     let b = text.as_bytes();
     let mut depth = 0i32;
     let mut i = open;
@@ -386,7 +391,7 @@ fn matching_paren(text: &str, open: usize) -> Option<usize> {
             b')' | b']' | b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return (b[i] == b')').then_some(i);
+                    return Some(i);
                 }
             }
             b'"' => {
@@ -490,6 +495,42 @@ fn call_in_text(text: &str, line: u32, column: Option<u32>, name: &str) -> Optio
         at = a + name.len();
     }
     None
+}
+
+/// The calls a macro's arguments make by one of `paths` (custodian_kit's `change::macro_calls`: the paths in its tokens
+/// that resolve to the function): from the macro's place (its path, as klepto records it) to the bracket closing its
+/// arguments, each place a path is written as a whole word (not after `.` or another path segment), followed by its
+/// argument list. Each call's `(` and `)` byte offsets.
+fn calls_in_macro(text: &str, line: u32, column: Option<u32>, paths: &[String]) -> Vec<(usize, usize)> {
+    let (l, c) = syn_at(line, column);
+    let Some(from) = [offset(text, LineColumn { line: l, column: c }), offset(text, LineColumn { line: l, column: c + 1 })].into_iter().min() else { return Vec::new() };
+    // the macro's `!`, then the bracket its arguments open with
+    let Some(bang) = text[from..].find('!').map(|i| from + i) else { return Vec::new() };
+    let Some(open) = text[bang + 1..].find(|ch: char| !ch.is_whitespace()).map(|i| bang + 1 + i).filter(|i| matches!(text.as_bytes()[*i], b'(' | b'[' | b'{')) else { return Vec::new() };
+    let Some(close) = matching_close(text, open) else { return Vec::new() };
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut out = Vec::new();
+    for p in paths {
+        let mut at = open + 1;
+        while let Some(i) = text[at..close].find(p.as_str()) {
+            let a = at + i;
+            let before = text[..a].trim_end_matches(' ').chars().last();
+            let end = a + p.len();
+            at = end;
+            if word(text[..a].chars().last()) || word(text[end..].chars().next()) || matches!(before, Some('.' | ':')) {
+                continue;
+            }
+            let rest = end + (text[end..close].len() - text[end..close].trim_start().len());
+            if text[rest..].starts_with('(')
+                && let Some(c) = matching_paren(text, rest).filter(|c| *c < close)
+            {
+                out.push((rest, c));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// klepto's `(file, line, column)` (column 1-based or 0-based as it records) as syn's `(line, column 0-based)`.
@@ -1072,6 +1113,13 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                             by_file.entry(canon(&c.location.path)).or_default().push((l, c.location.column));
                         }
                 }
+                // the calls inside a macro's arguments whose path resolves to it (custodian_kit's rule, the one the
+                // preflight counts by): klepto names their paths and resolves none
+                let mut in_macros: BTreeMap<PathBuf, Vec<change::MacroCall>> = BTreeMap::new();
+                for m in change::macro_calls(k, &item) {
+                    by_file.entry(canon(&m.file)).or_default();
+                    in_macros.entry(canon(&m.file)).or_default().push(m);
+                }
                 for (cf, places) in by_file {
                     let t = p.tree.text(&cf)?.clone();
                     let parsed = parse(&t, &cf)?;
@@ -1083,6 +1131,13 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                             Some((open, close)) => closes.push((close, !t[open + 1..close].trim().is_empty())),
                             None => p.listed.push(format!("call {}:{l}: klepto names it, and no call of {old_name} is there to give the new argument", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default())),
                         }
+                    }
+                    for m in in_macros.get(&cf).into_iter().flatten() {
+                        let found = calls_in_macro(&t, m.line, m.column, &m.paths);
+                        if found.is_empty() {
+                            p.listed.push(format!("call in {}! at {}:{}: its tokens name {}, and no call of it is there to give the new argument", m.macro_path, relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default(), m.line, m.paths.join(", ")));
+                        }
+                        closes.extend(found.into_iter().map(|(open, close)| (close, !t[open + 1..close].trim().is_empty())));
                     }
                     closes.sort();
                     closes.dedup();
@@ -1527,33 +1582,6 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
     }
 }
 
-/// A package's feature model as the change leaves its manifest: `declare_feature`'s feature and the dependencies it
-/// makes optional, and `optional` on `add_dependency`/`change_dependency` (cargo's implicit features read again).
-fn desired_model(model: &klepto::FeatureModel, spec: &ChangeSpec, k: &klepto::Klepto, root: &Path, pkg: &str) -> klepto::FeatureModel {
-    let mut m = model.clone();
-    let mut asked = klepto::PackageSpec::default();
-    match spec.op() {
-        Operation::DeclareFeature => {
-            if let Some(d) = change::feature_declaration(k, root, spec).ok().filter(|d| d.package == pkg) {
-                asked.features.insert(d.feature.clone(), d.enables.clone());
-                asked.optional.extend(d.made_optional.iter().cloned());
-            }
-        }
-        Operation::AddDependency | Operation::ChangeDependency => {
-            for d in spec.dependencies_named() {
-                if let Some(o) = d.optional {
-                    for x in m.dependencies.iter_mut().filter(|x| x.name == d.name.replace('-', "_")) {
-                        x.optional = o;
-                    }
-                }
-            }
-        }
-        _ => return m,
-    }
-    m = m.apply_spec(&asked);
-    m
-}
-
 fn enable_text(e: &klepto::FeatureEnable) -> String {
     match e {
         klepto::FeatureEnable::Feature(f) => f.clone(),
@@ -1626,7 +1654,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             let Some(model) = k.features.get(&pkg) else { continue };
             // the configurations are the edited manifest's: a feature declared, a dependency made optional or
             // required again, as the change leaves them
-            let desired = desired_model(model, &spec, &k, &root, &pkg);
+            let desired = change::model_after(&k, &root, &spec, &pkg).unwrap_or_else(|| model.clone());
             for job in klepto::check_matrix(&desired) {
                 let r = oracle.check_edits(&job, &edits);
                 let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
@@ -1674,6 +1702,13 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     said.push(format!("cargo check: {} of {} configurations compile; postconditions: {} of {} hold", checks.iter().filter(|c| c.ok).count(), checks.len(), postconditions.iter().filter(|(_, h)| *h).count(), postconditions.len()));
     for c in checks.iter().filter(|c| !c.ok) {
         said.push(format!("does not compile: {} {}{}: {}", c.package, if c.no_default { "--no-default-features " } else { "" }, c.features.join(","), c.error.clone().unwrap_or_default()));
+    }
+    // code naming an optional dependency with no feature gate: the fix is the spec's (custodian_kit's rule, the one
+    // the preflight refuses by)
+    if !checks.iter().all(|c| c.ok) {
+        for u in change::optional_uses(&k, &spec, &land).into_iter().filter(|u| !u.gated) {
+            said.push(format!("the fix: {}", u.fix()));
+        }
     }
     for (f, h) in &postconditions {
         if !h {
@@ -1741,7 +1776,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         }
     } else {
         exit_code = if proved { 0 } else { 1 };
-        said.push(format!("proved on a scratch copy, not written (--write writes): {} files", record.files.len()));
+        said.push(dry_line(proved, &record, &said));
     }
     let record_file = if record.written || opts.out.is_some() { record_path(&root, opts, &spec) } else { None };
     if let Some(p) = &record_file {
@@ -1751,6 +1786,23 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         std::fs::write(p, serde_json::to_string_pretty(&record)? + "\n")?;
     }
     Ok(Outcome { root, record, record_file, edits, exit_code, said })
+}
+
+/// The line a transform without `--write` ends with: proved on a scratch copy and not written, or not proved and
+/// why (the first configuration that does not compile, the first postcondition that does not hold, or nothing checked).
+fn dry_line(proved: bool, record: &TransformRecord, said: &[String]) -> String {
+    if proved {
+        return format!("proved on a scratch copy, not written (--write writes): {} files", record.files.len());
+    }
+    let why = record
+        .checks
+        .iter()
+        .find(|c| !c.ok)
+        .map(|c| format!("{} {}{} does not compile: {}", c.package, if c.no_default { "--no-default-features" } else { "" }, if c.features.is_empty() { String::new() } else { format!(" {}", c.features.join(",")) }, c.error.clone().unwrap_or_default()))
+        .or_else(|| record.postconditions.iter().find(|(_, h)| !h).map(|(f, _)| format!("the postcondition {f} does not hold")))
+        .or_else(|| said.iter().find(|l| l.contains("not proved")).cloned())
+        .unwrap_or_else(|| "no configuration was checked".into());
+    format!("not proved: {why}; nothing written")
 }
 
 /// `transform --revert RECORD`: every file the record wrote put back as it was, when it is still as the record left

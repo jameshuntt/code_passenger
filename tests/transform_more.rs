@@ -191,3 +191,51 @@ fn wrap_runs_the_pieces_first_and_keeps_the_body_as_its_value() {
     transform::revert(root, o.record_file.as_ref().unwrap()).unwrap();
     assert_eq!(read(root, "shop/src/lib.rs"), before);
 }
+
+/// shop's tests call `version` inside a function-like proc macro's arguments (`shop_marks::same!`), which klepto
+/// cannot expand: it names the paths there and resolves none. custodian_kit's `change::macro_calls` resolves them from
+/// the test module (`use super::*`, `crate::`), and the new argument reaches both calls, one of them over two lines.
+fn calls_in_a_proc_macro(root: &Path) {
+    let marks = read(root, "marks/src/lib.rs");
+    std::fs::write(root.join("marks/src/lib.rs"), format!("{marks}\n/// A function-like macro: its tokens back as they are, which klepto cannot expand.\n#[proc_macro]\npub fn same(input: TokenStream) -> TokenStream {{\n    input\n}}\n")).unwrap();
+    let manifest = read(root, "shop/Cargo.toml");
+    std::fs::write(root.join("shop/Cargo.toml"), format!("{manifest}\n[dev-dependencies]\nshop-marks = {{ path = \"../marks\" }}\n")).unwrap();
+    let lib = read(root, "shop/src/lib.rs").replace(
+        "        assert_eq!(twice_total(3), 8);\n    }\n",
+        "        assert_eq!(twice_total(3), 8);\n    }\n\n    #[test]\n    fn the_version_through_a_macro() {\n        assert!(shop_marks::same!(version() == 1));\n        assert!(shop_marks::same!(\n            crate::version() > 0\n        ));\n    }\n",
+    );
+    std::fs::write(root.join("shop/src/lib.rs"), lib).unwrap();
+}
+
+#[test]
+fn a_call_inside_a_macro_klepto_cannot_expand_gets_the_new_argument() {
+    let d = common::fresh_copy("transform_more");
+    let root = d.path();
+    calls_in_a_proc_macro(root);
+    let o = apply(root, &spec(root, "versioned", "name = \"versioned\"\nobjective = \"o\"\noperation = \"change_signature\"\ntarget = \"shop::version\"\n\n[function]\nname = \"version\"\nvis = \"pub\"\nparams = [{ name = \"minor\", ty = \"u32\" }]\nreturns = \"u32\"\n\n[call_sites]\npass = \"0\"\n"));
+    let lib = read(root, "shop/src/lib.rs");
+    assert!(lib.contains("assert!(shop_marks::same!(version(0) == 1));"), "{lib}");
+    assert!(lib.contains("            crate::version(0) > 0\n"), "{lib}");
+    assert!(read(root, "cli/src/main.rs").contains("shop::version(0)"));
+    assert!(o.record.checks.iter().all(|c| c.ok) && o.record.files.iter().any(|f| f.path == "shop/src/lib.rs"), "{:?}", o.record);
+}
+
+/// A dry transform that does not compile says it is not proved and why; code naming an optional dependency with no
+/// feature gate is told the spec's fix (custodian_kit's `change::optional_uses`, the rule the preflight refuses by).
+#[test]
+fn a_dry_run_that_does_not_compile_says_not_proved_and_names_the_attrs_fix() {
+    let d = common::fresh_copy("feature_forms");
+    let root = d.path();
+    let s = spec(root, "from-b", "name = \"from-b\"\nobjective = \"o\"\noperation = \"make_fn\"\ntarget = \"crate:p\"\n\n[function]\nname = \"from_b\"\nvis = \"pub\"\nreturns = \"u8\"\nbody = [{ piece = \"value\", value = \"b::b()\" }]\n");
+    let o = transform::run(root, &opts(root, &s, false)).unwrap();
+    assert_eq!(o.exit_code, 1, "{}", o.said.join("\n"));
+    let last = o.said.last().unwrap();
+    assert!(last.starts_with("not proved: p --no-default-features does not compile: ") && last.ends_with("; nothing written"), "{last}");
+    assert!(!o.said.iter().any(|l| l.starts_with("proved on a scratch copy")), "{:?}", o.said);
+    assert!(o.said.iter().any(|l| l == "the fix: b is an optional dependency of p (turned on by b): give the code `attrs = ['#[cfg(feature = \"b\")]']`, or gate the place it lands"), "{:?}", o.said);
+    // with the attribute it is proved, and the dry line says so
+    let s = spec(root, "from-b", "name = \"from-b\"\nobjective = \"o\"\noperation = \"make_fn\"\ntarget = \"crate:p\"\n\n[function]\nname = \"from_b\"\nvis = \"pub\"\nreturns = \"u8\"\nattrs = ['#[cfg(feature = \"b\")]']\nbody = [{ piece = \"value\", value = \"b::b()\" }]\n");
+    let o = transform::run(root, &opts(root, &s, false)).unwrap();
+    assert_eq!(o.exit_code, 0, "{}", o.said.join("\n"));
+    assert!(o.said.last().unwrap().starts_with("proved on a scratch copy, not written (--write writes): 1 files"), "{:?}", o.said);
+}
