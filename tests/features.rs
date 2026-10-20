@@ -306,7 +306,8 @@ fn apply_writes_every_crate_check_is_idempotent_and_the_headers_are_the_plans() 
     assert!(app.contains("#[cfg(feature = \"log\")]\npub fn trace()"), "{app}");
     assert!(!app.contains("#[cfg(feature = \"log\")]\npub fn run()"));
     let app_manifest = read(&root.join("app/Cargo.toml"));
-    assert!(app_manifest.contains("logsink = { path = \"../deps/logsink\" , optional = true }"), "{app_manifest}");
+    // cargo's spacing: no ` , optional` after the last value (code_passenger 0.4.4)
+    assert!(app_manifest.contains("logsink = { path = \"../deps/logsink\", optional = true }"), "{app_manifest}");
     assert!(app_manifest.contains("log = [\"dep:logsink\", \"store/log\"]"), "{app_manifest}");
     assert!(app_manifest.contains("default = [\"log\"]"), "{app_manifest}");
     assert!(read(&root.join(STORE_SINK)).contains("#[cfg(feature = \"log\")]\npub fn flush_twice()"));

@@ -6,7 +6,7 @@
 //! The spec says what to make or change; custodian_kit says where it lands
 //! (`change::landing`, the one rule the preflight reads too) and renders what
 //! is written from the spec's fields (`change::render_*`: bodies are
-//! simple_impl 0.1.11 toolkit pieces, whole functions and trait impls its
+//! simple_impl 0.1.12 toolkit pieces, whole functions and trait impls its
 //! generators). This module places the text at the place syn finds in the
 //! file (the item's span from klepto's line: its closing brace, the line
 //! after it, the attributes above it), cascades where the operation says so
@@ -1646,13 +1646,13 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
                 _held = None;
                 // a changed manifest changes the lock file: cargo's, from the proof, is written with the change, so
                 // the tree's lock names what its manifests name (a scan reads dependency macros through it, frozen)
-                if matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature) {
-                    if let Ok(after) = std::fs::read_to_string(d.join("Cargo.lock")) {
-                        let lock = ws.join("Cargo.lock");
-                        let before = std::fs::read_to_string(&lock).unwrap_or_default();
-                        if after != before && !edits.files.iter().any(|f| f.path == lock) {
-                            edits.files.push(crate::gate::FileEdit { path: lock, before, after });
-                        }
+                if matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature)
+                    && let Ok(after) = std::fs::read_to_string(d.join("Cargo.lock"))
+                {
+                    let lock = ws.join("Cargo.lock");
+                    let before = std::fs::read_to_string(&lock).unwrap_or_default();
+                    if after != before && !edits.files.iter().any(|f| f.path == lock) {
+                        edits.files.push(crate::gate::FileEdit { path: lock, before, after });
                     }
                 }
             }

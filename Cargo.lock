@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "code_passenger"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "big-bad-bool",
  "chrono",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "custodian_kit"
-version = "0.3.3"
+version = "0.3.6"
 dependencies = [
  "big-bad-bool",
  "bundles",
@@ -641,6 +641,7 @@ dependencies = [
  "xccute_contract",
  "xccute_decisions",
  "xccute_runtime",
+ "zstd",
 ]
 
 [[package]]
@@ -1297,9 +1298,9 @@ dependencies = [
 
 [[package]]
 name = "klepto"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46faecf719118c2a5be377dfd43eee48d221f0bb37a24372a2570cc4269b4ddd"
+checksum = "fe0556275c3669549fe31757c3cb07912fc1e4a91e3ec1590ee59503e12d59ad"
 dependencies = [
  "blake3",
  "cargo_metadata",
@@ -2199,9 +2200,9 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "simple_impl"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3e73baf85ccf92fe0b3da7467f7860ce4e02fce8bdf1aa815774b9429b1d9dc"
+checksum = "dae69df3328da4f402d1bc26e7e919b9dac75520c7de91e7df0f1c3eb9ebf741"
 
 [[package]]
 name = "simple_impl_attr_kit"

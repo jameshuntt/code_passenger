@@ -32,7 +32,7 @@ fn three_exact_bodies_are_swapped_and_a_near_one_is_refused() {
     assert_eq!(first.record.pieces, ["ensure"]);
     assert_eq!(first.record.steps.len(), 2, "the dependency first, as its own step");
     assert!(first.record.preflight.iter().any(|c| !c.holds && c.what.contains("depends on simple_impl")));
-    assert!(std::fs::read_to_string(root.join("guards/Cargo.toml")).unwrap().contains("simple_impl = \"0.1.11\""));
+    assert!(std::fs::read_to_string(root.join("guards/Cargo.toml")).unwrap().contains("simple_impl = \"0.1.12\""));
     assert!(lib(root).contains("pub fn qos(level: u8) -> Result<u8, &'static str> {\n    simple_impl::ensure!(level <= 2, \"qos is 0, 1 or 2\");\n    let checked = level;\n    Ok(checked)\n}"), "{}", lib(root));
 
     let second = swap(root, "guards::first_port");

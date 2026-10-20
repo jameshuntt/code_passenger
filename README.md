@@ -214,7 +214,7 @@ item klepto does not name in that file is refused (`[CP0063]`).
 
 custodian's bounded jobs write no code by hand. the agent writes a change
 spec (custodian_kit's `change::ChangeSpec`: one operation, its target, its
-boundaries, any body as simple_impl 0.1.11 toolkit pieces), custodian
+boundaries, any body as simple_impl 0.1.12 toolkit pieces), custodian
 decides it in a preflight, and this line makes it.
 
 ```bash

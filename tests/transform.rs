@@ -3,7 +3,7 @@
 //! `transform`: every operation of the change vocabulary applied to a copy of the fixture workspace
 //! (tests/fixtures/transform_ws: a `shop` library and an `app` that uses it), each proved by cargo over the check
 //! matrix of the crate it lands in and the crates that depend on it, its facts shown by a fresh klepto scan, written
-//! with its record, and put back by `--revert`. A function's body is simple_impl 0.1.11's toolkit pieces; the
+//! with its record, and put back by `--revert`. A function's body is simple_impl 0.1.12's toolkit pieces; the
 //! generated function compiles in the fixture and its declared test passes.
 
 mod common;
@@ -100,7 +100,7 @@ value = "Ok(self.total - off)"
 "#));
     let t = read(root, "shop/src/lib.rs");
     assert!(t.contains("    /// The total with `pct` percent off.\n    pub fn discounted(&self, pct: u64) -> Result<u64, &'static str> {\n        simple_impl::ensure!(pct <= 100, \"over a hundred percent\");\n        let off = self.total * pct / 100;\n        Ok(self.total - off)\n    }\n"), "{t}");
-    assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.11\""), "the toolkit added to the crate");
+    assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.12\""), "the toolkit added to the crate");
     assert!(o.record.files.iter().any(|f| f.path == "shop/Cargo.toml"));
     assert!(o.record.listed.iter().any(|l| l.contains("gets the dependency simple_impl")));
     // its test, declared as a spec too, then run
@@ -239,7 +239,7 @@ fn move_and_extract_keep_the_old_paths_through_a_re_export() {
 #[test]
 fn every_operation_of_the_vocabulary_has_its_test_here() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let here = std::fs::read_to_string(dir.join("transform.rs")).unwrap() + &std::fs::read_to_string(dir.join("transform_more.rs")).unwrap();
+    let here = ["transform.rs", "transform_more.rs", "manifest_ops.rs"].iter().map(|f| std::fs::read_to_string(dir.join(f)).unwrap()).collect::<String>();
     for op in custodian_kit::change::Operation::ALL {
         assert!(here.contains(&format!("operation = \\\"{}\\\"", op.as_str())) || here.contains(&format!("operation = \"{}\"", op.as_str())), "no test applies {}", op.as_str());
     }
@@ -307,7 +307,7 @@ value = "one"
 "#));
     let t = read(root, "shop/src/lib.rs");
     assert!(t.contains("pub fn version() -> u32 {\n    let one = 1;\n    simple_impl::push_if!(&mut Vec::<u32>::new(), one > 0 => one);\n    one\n}\n"), "{t}");
-    assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.11\""));
+    assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.12\""));
     assert_eq!(o.record.files.len(), 2);
     // the spec's function must be the target's own
     let other = spec(root, "other", "name = \"other\"\nobjective = \"o\"\noperation = \"replace_body\"\ntarget = \"shop::version\"\n\n[function]\nname = \"label\"\n\n[[function.body]]\npiece = \"value\"\nvalue = \"2\"\n");
@@ -318,8 +318,9 @@ value = "one"
     let golden = t.find("mod golden {").unwrap();
     assert!(t[golden..].contains("    #[test]\n    fn version_is_still_one() {\n        assert_eq!(version(), 1);\n    }\n"), "{t}");
     assert!(o.record.postconditions.contains(&("exists shop::golden::version_is_still_one".to_string(), true)), "{:?}", o.record.postconditions);
-    let missing = spec(root, "nowhere", "name = \"nowhere\"\nobjective = \"o\"\noperation = \"add_test\"\ntarget = \"shop::version\"\nto = \"absent\"\n\n[function]\nname = \"t\"\n");
-    assert!(transform::run(root, &Options { spec: missing, write: true, ..Options::default() }).is_err());
+    // a module the file does not have is made (code_passenger 0.4.4; it was refused)
+    apply(root, &spec(root, "nowhere", "name = \"nowhere\"\nobjective = \"o\"\noperation = \"add_test\"\ntarget = \"shop::version\"\nto = \"absent\"\n\n[function]\nname = \"t\"\n\n[[function.body]]\npiece = \"raw\"\ncode = \"assert_eq!(version(), 1);\"\n"));
+    assert!(read(root, "shop/src/lib.rs").contains("#[cfg(test)]\nmod absent {\n    use super::*;\n"));
 }
 
 #[test]
