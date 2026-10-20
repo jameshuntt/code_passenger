@@ -826,6 +826,19 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             }
             let t = p.tree.text(&file)?;
             let sp = item_at(t, &file, line_of(&land.at))?;
+            if f.generator.is_some() {
+                // a toolkit method generator writes the whole function from its signature: the function (its docs and
+                // attributes, which the spec carries into the call) becomes the call
+                let lines: Vec<String> = t.lines().map(str::to_string).collect();
+                let lead = crate::gate::leading(&lines, sp.start.line - 1);
+                let indent = indent_of(t, lead.decl + 1);
+                let call = change::render_fn(f, &indent).map_err(refused)?;
+                let (a, b) = (line_start(t, sp.start.line), offset(t, sp.end));
+                t.replace_range(a..b, call.trim_end());
+                p.generated.push(call.clone());
+                p.facts.push(text_fact(&land.file, &call));
+                let _ = old;
+            } else {
             let open = sp.body_open.ok_or_else(|| refused(format!("{item}: no body")))?;
             // the body from its opening brace to the item's end (its closing brace); the signature, docs and
             // attributes above it stay as they are
@@ -842,6 +855,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             p.facts.push(format!("args {item} {}", old.args.len()));
             if !first.is_empty() {
                 p.facts.push(format!("text {} {first}", land.file));
+            }
             }
         }
         Inline => {
