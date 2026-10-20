@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.5 (2026-10-20)
+
+On custodian_kit 0.3.7: the writer's half of three findings custodian's exercise made on the pantry with 0.4.4.
+Nothing is removed from the API: the rustdoc JSON of 0.4.4 and 0.4.5 has the same 2043 items. Every link is pinned to
+4456b83; the lines it replaces to 4fe7938 (0.4.4's tree).
+
+- **Calls inside a macro's arguments get the new argument.** `change_signature` gave it only to the calls klepto
+  resolves ([transform.rs L1069 at 0.4.4](https://github.com/jameshuntt/code_passenger/blob/4fe7938/src/transform.rs#L1069)); the pantry's two calls of `shopping_list` inside
+  `simple_impl::ensure_eq!` and `ensure_empty!`, which klepto names in the tokens and resolves none, were left, and
+  the proof stopped the change. The calls are now custodian_kit's `change::macro_calls`, the rule the preflight counts
+  by ([transform.rs L1119](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L1119)), each found from the macro to the bracket closing its arguments, over as many
+  lines as it takes, by the path its tokens write (`list(..)`, `crate::list(..)`), never after `.` or another
+  segment ([transform.rs L504](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L504)). Proof: tests/transform_more.rs
+  `a_call_inside_a_macro_klepto_cannot_expand_gets_the_new_argument` ([L211](https://github.com/jameshuntt/code_passenger/blob/4456b83/tests/transform_more.rs#L211)): two
+  calls inside a function-like proc macro, one over three lines, get the argument and the tests compile.
+- **A dry run that does not compile says so.** It said "proved on a scratch copy, not written" either way
+  ([transform.rs L1744 at 0.4.4](https://github.com/jameshuntt/code_passenger/blob/4fe7938/src/transform.rs#L1744)). It now says `not proved:` with the first configuration that does
+  not compile, the first postcondition that does not hold, or that nothing was checked ([transform.rs L1779](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L1779),
+  [transform.rs L1793](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L1793)).
+- **The fix for code naming an optional dependency.** A proof that fails for code naming an optional dependency with
+  no feature gate says the spec's fix, `attrs = ['#[cfg(feature = "..")]']`, from custodian_kit's
+  `change::optional_uses`, the rule the preflight refuses by ([transform.rs L1709](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L1709)). Proof:
+  `a_dry_run_that_does_not_compile_says_not_proved_and_names_the_attrs_fix` ([L226](https://github.com/jameshuntt/code_passenger/blob/4456b83/tests/transform_more.rs#L226)):
+  `b::b()` in p with no gate is not proved, the line says why and the fix; with the attribute it is proved.
+- The feature model a change leaves is custodian_kit's `change::model_after` ([transform.rs L1657](https://github.com/jameshuntt/code_passenger/blob/4456b83/src/transform.rs#L1657)), the
+  rule the preflight now counts configurations by; 0.4.4 had its own ([transform.rs L1532 at 0.4.4](https://github.com/jameshuntt/code_passenger/blob/4fe7938/src/transform.rs#L1532)).
+
+`cargo test --all-features` and `cargo clippy --all-targets --all-features -- -D warnings` pass.
+
 ## 0.4.4 (2026-10-20)
 
 The writer for what custodian_kit 0.3.6 adds after the pantry: features written to a manifest, a dependency made
