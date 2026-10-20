@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.4.3 (2026-10-20)
+
+custodian's exercise ran every operation on copies of three projects and found six faults in `transform`; the first
+bounded job in the kit found two more. Each is fixed here, with `inline` and `wrap`, the two operations the
+vocabulary did not have. On custodian_kit 0.3.3. Nothing public removed or changed: the rustdoc JSON of 0.4.2 and
+0.4.3 differ only by added items (the check line's `--lib`, `--bins` and `--tests`, the oracle's `tests`). New code
+is pinned to 49d4d5b.
+
+### A new module's folder
+
+- Was: `add_module` and `extract` into a module that has its own file (`src/names.rs`) planned the new file at
+  `src/names/<name>.rs`, proved it on the scratch copy, then `--write` failed with `[CP0001] No such file or
+  directory`: the write did not make the folder ([src/gate.rs#L65-L72 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/gate.rs#L65-L72), [src/transform.rs#L1091 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L1091)). Six cases.
+- `EditSet::write` makes the folder a new file sits in ([src/gate.rs#L65-L76](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/gate.rs#L65-L76)).
+
+### A crate with only a binary, and a tree nothing checked
+
+- Was: `stored::main` in the `cli` crate landed in package `stored` (the binary's crate root), which has no feature
+  model, so the check covered 0 packages; the postconditions were then read on the tree as it was, never written,
+  and `add_attribute`, `add_test`, `anchor` came back not proved ([src/transform.rs#L1031 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L1031)). Three cases.
+- The landing's package is the crate root's package (custodian_kit's `change::package_of`), so `cli` is checked.
+  A change no package checked is never proved, and its postconditions are read on a copy the edits were written to
+  ([src/transform.rs#L1533-L1549](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1533-L1549), [src/transform.rs#L1563](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1563); was [src/transform.rs#L1046 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L1046)).
+
+### Every call of a changed signature
+
+- Was: a call was found only where syn's visitor met klepto's place for it, and klepto places a method call at its
+  receiver, not its name; a call inside a macro's tokens (`println!("{}", api::open("x"))`, `assert_eq!(set.contains(c), ..)`)
+  was never met; and a method's `self` counted as a parameter, so adding one to `contains(self, c)` looked like no
+  addition ([src/transform.rs#L338 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L338), [src/transform.rs#L740 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L740)). Two cases.
+- The visitor matches a method call at its receiver or its name, and only a call that names the function
+  ([src/transform.rs#L338-L376](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L338-L376)); a call klepto resolves inside a macro's tokens is found in the text from
+  klepto's place, its argument list matched by parentheses ([src/transform.rs#L378-L493](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L378-L493)); the receiver is not
+  a parameter ([src/transform.rs#L1000](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1000), [src/transform.rs#L1042](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1042)).
+
+### A moved item
+
+- Was: `move` appended the item where it lands and kept the import of it there (`pub use within::{.., ProofKind, ..}`
+  in lib.rs): "the name `ProofKind` is defined multiple times" ([src/transform.rs#L840 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L840)). Two cases. And the
+  private imports the item used (`use big_bad_bool::bitpack`) did not come with it.
+- The destination's imports of the item are dropped, a group losing only that name ([src/transform.rs#L1382-L1408](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1382-L1408));
+  the moved item takes the private imports of the module it left that it names, unless the destination declares or
+  imports the name (klepto's view, which sees what macros declare) ([src/transform.rs#L1271-L1378](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1271-L1378)).
+
+### Names, macros, tests, receipts
+
+- A dependency's name reads with `-` and `_` as one (`big-bad-bool` is `big_bad_bool`) ([src/transform.rs#L1438](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1438);
+  was [src/transform.rs#L938 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/transform.rs#L938)). One case.
+- A struct under an attribute macro that rewrites it (`#[bitpack]`) is refused for `add_field` and `add_constructor`
+  by the macro's name, `[CUST0040]`, before anything is planned ([src/transform.rs#L538](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L538)). Three cases.
+- The proof compiles the tests: each check is `cargo check -p P --lib --bins --tests` (no `--lib` for a package
+  without one), so a change inside a test module fails at transform time, not at the first `cargo test`
+  ([src/lines.rs#L568](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/lines.rs#L568), [src/transform.rs#L1499](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L1499); was [src/lines.rs#L557 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/lines.rs#L557)).
+- With a job open in the project, a run's receipt is the job's, a dry run's too (the kit job's dry runs #116 to #119
+  landed outside it) ([src/lines.rs#L1286](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/lines.rs#L1286); was [src/lines.rs#L1265 at 0.4.2](https://github.com/jameshuntt/code_passenger/blob/cdb2ace7d8629eacfba1771255ad564b9f0736f7/src/lines.rs#L1265)).
+
+### inline and wrap
+
+- `inline` ([src/transform.rs#L847-L938](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L847-L938)): custodian_kit's `inline_blockers` first; the function's parameters and
+  body as they are written; each call, wherever klepto resolves it, from its path to its closing parenthesis,
+  becomes `{ let <pattern>: <type> = <argument>; .. <body> }`, in parentheses where it starts a statement and more
+  of the expression follows; the function is removed (its docs and attributes with it) when it is not `pub`.
+  Postconditions `calls <id> 0` and, removed, `absent <id>`.
+- `wrap` ([src/transform.rs#L939-L966](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/src/transform.rs#L939-L966)): the spec's pieces, then the body as it was as the block's value, moved
+  one level in unless a string in it runs over lines.
+- Both are reversible through the record, as every operation is: `transform --revert`.
+
+### Proof
+
+- tests/transform_more.rs, on the new fixture tests/fixtures/transform_more (`shop` with `stock.rs` and a `depot` that
+  imports from it, `cli` with only a binary, `packed` under `#[keep]` from `shop-marks`):
+  [tests/transform_more.rs#L37](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L37) the folder made, and both reverts take the files away;
+  [tests/transform_more.rs#L56](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L56) `cli` checked, the call inside `println!` given its argument;
+  [tests/transform_more.rs#L68](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L68) nothing checked, never proved; [tests/transform_more.rs#L79](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L79) a method's calls by
+  receiver, one inside `assert_eq!`, `args .. 3`; [tests/transform_more.rs#L90](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L90) the import dropped and
+  `BTreeMap`'s carried; [tests/transform_more.rs#L102](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L102) `dependency shop shop-marks` holds;
+  [tests/transform_more.rs#L110](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L110) `[CUST0040]` with `#[keep] (shop_marks::keep)`, a method written;
+  [tests/transform_more.rs#L123](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L123) a test that does not compile is not proved; [tests/transform_more.rs#L134](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L134) the
+  receipt is the open job's; [tests/transform_more.rs#L153](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L153), [tests/transform_more.rs#L168](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L168) inline, its revert,
+  its refusal on `return`, a `pub` function kept; [tests/transform_more.rs#L182](https://github.com/jameshuntt/code_passenger/blob/49d4d5b53b0f3d39d065afc1c52b60295b35cbdb/tests/transform_more.rs#L182) wrap and its revert.
+- tests/transform.rs: the gate case now gates `label`: with the tests compiled, gating `version` breaks the golden
+  module that calls it, as it should.
+- The exercise again on the same three projects with these builds: the 22 findings are down to the refusals that are
+  right (see custodian 0.3.2).
+
 ## 0.4.2 (2026-10-19)
 
 The writer for custodian_kit 0.3.2's two new operations, which the first
