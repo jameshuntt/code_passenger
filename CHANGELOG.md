@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.4.6 (2026-10-20)
+
+On custodian_kit 0.3.8: the proof's new shape, and James's rule for a repeated shape. A body swapped in the kit's
+fleet_ops with 0.4.5 was proved on a fresh copy of the workspace with an empty build, compiling every crate that
+depends on fleet_ops, near and far: one swap took 19.4 minutes and 37 GB, and the next swap paid it all again. Its
+`to-toolkit` refused every fleet_ops swap, because 23 of the crate's tests fail on a Mac before any change. Measured
+on the same swap (`fleet_ops::survey::main_pid`, a `return_if`) with 0.4.6: 6.7 minutes and a 20 GB build the first
+time, kept; 2.7 minutes and about 1 GB more for the next swap; 8 packages and 12 configurations checked, the
+expansion the same, the 23 failures named as the base's. Nothing is removed from the API: the rustdoc JSON of 0.4.5
+and 0.4.6 differ by 132 additions and no removal. Every link is pinned to b628f28; the lines it replaces to 70f0929 (0.4.5).
+
+- **One proof place per workspace.** `proof_dir::ProofDir` ([proof_dir.rs L88](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/proof_dir.rs#L88)): a copy of the
+  workspace at a path that does not change and one build folder kept beside it, under
+  `<temp>/code_passenger-proof/<name>-<digest of its path>` (or `$CODE_PASSENGER_PROOF_DIR`). A proof syncs the copy by
+  bytes ([proof_dir.rs L121](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/proof_dir.rs#L121)): a file whose bytes differ is written, a file the workspace no
+  longer has goes, nothing else is touched, so cargo compiles again only what moved. One proof holds it at a time (a
+  lock file). Every cargo line of a proof runs on the kept build with no debug info (`PROOF_ENV`,
+  [proof_dir.rs L51](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/proof_dir.rs#L51)). 0.4.5 made a fresh copy and an empty build per proof
+  ([oracle.rs L87 at 0.4.5](https://github.com/jameshuntt/code_passenger/blob/70f0929/src/oracle.rs#L87), [oracle.rs L119 at 0.4.5](https://github.com/jameshuntt/code_passenger/blob/70f0929/src/oracle.rs#L119)). The place is
+  never inside the workspace's `target/`: klepto reads no source under a `target` folder, so the proof's scan found
+  nothing there. A place whose workspace is gone is taken away when another is taken ([proof_dir.rs L66](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/proof_dir.rs#L66)).
+  Proof: tests/batch.rs `the_proof_place_is_kept_and_a_sync_writes_only_what_differs` ([L72](https://github.com/jameshuntt/code_passenger/blob/b628f28/tests/batch.rs#L72)).
+- **The crate and its direct dependents.** The transform checks the packages custodian_kit's `change::proof_packages`
+  names ([transform.rs L560](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L560)), its tests compiled only in the crate it lands in
+  ([oracle.rs L130](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/oracle.rs#L130)); 0.4.5 walked the closure of dependents
+  ([transform.rs L1651 at 0.4.5](https://github.com/jameshuntt/code_passenger/blob/70f0929/src/transform.rs#L1651)).
+- **The expansion is the transform's postcondition.** For a spec with `same_expansion`, `cargo expand` of the function
+  before (the copy as the tree is) and after (the edits written) on the kept build ([transform.rs L1701](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L1701)),
+  compared in custodian_kit's proof form, is the postcondition `expands <function> the same`
+  ([transform.rs L1772](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L1772)), its two expansions kept beside the record
+  (`<record>.expansion.json`). 0.4.5 checked it only inside `to-toolkit`, which no custodian receipt carried.
+- **The tests against the base.** `transform --tests` runs the crate's tests on the proof and, when some fail, the same
+  tests with the change taken out (`ProofDir::tests_compared`, [proof_dir.rs L207](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/proof_dir.rs#L207)): a test
+  failing the same before is not the change's; one the change breaks stops it (`tests <crate> as before`). `to-toolkit`
+  is now that transform ([to_toolkit.rs L253](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/to_toolkit.rs#L253)); 0.4.5 asked for exit 0
+  ([to_toolkit.rs L257 at 0.4.5](https://github.com/jameshuntt/code_passenger/blob/70f0929/src/to_toolkit.rs#L257)). A dry `to-toolkit` on a crate that does not depend on
+  simple_impl yet now says it needs `--write` for the dependency step first.
+- **James's rule for a repeated shape.** Prove one member of a shape fully, then batch the rest of that shape in the
+  crate under one compile, one receipt per member, a failing member excluded and named. It holds for every operation
+  with repeated shapes (a gate, a derive, a rename), not only a swap. `transform --batch LIST [--after-proof N]
+  [--tests]` (`transform::run_batch`, [transform.rs L2062](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L2062)): the members planned over one
+  scan ([transform.rs L2027](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L2027)), a member whose edit overlaps another's or that changes a
+  manifest left out, the rest placed together ([transform.rs L1976](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L1976)), one cargo check over
+  the check matrix, one expansion per crate before and after, one scan for every postcondition, the crates' tests once;
+  a member an error points into, whose postcondition does not hold or whose expansion is not the same is left out and
+  named and the rest checked again; one checkpoint before and after (`a batch of N after proof #S`), one record per
+  member. `--toolkit` takes functions by path and finds each again with the matcher first
+  ([to_toolkit.rs L385](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/to_toolkit.rs#L385)).
+- **A member reverts alone.** `transform --revert` of a member written before others takes out only its own change
+  when the file moved since, found once as it wrote it (`take_out`, [transform.rs L2384](https://github.com/jameshuntt/code_passenger/blob/b628f28/src/transform.rs#L2384));
+  0.4.5 refused any file that moved.
+
+Proof: tests/batch.rs ([L38](https://github.com/jameshuntt/code_passenger/blob/b628f28/tests/batch.rs#L38), [L95](https://github.com/jameshuntt/code_passenger/blob/b628f28/tests/batch.rs#L95), [L130](https://github.com/jameshuntt/code_passenger/blob/b628f28/tests/batch.rs#L130)) on
+tests/fixtures/batch_ws (rules, user depending on it, far depending on user): one swap checks rules and user, never
+far, its expansion the same and the failing-before test named as the base's; a swap not the same tokens and a change
+that breaks a passing test are refused; a batch of three after a proof leaves out the one not the same and writes the
+two, one record and one expansion each, and one of them reverts alone; the `--toolkit` line swaps the shape and leaves
+out a function not in the code. `cargo test --all-features` and `cargo clippy --all-targets --all-features -- -D
+warnings` pass.
+
 ## 0.4.5 (2026-10-20)
 
 On custodian_kit 0.3.7: the writer's half of three findings custodian's exercise made on the pantry with 0.4.4.
