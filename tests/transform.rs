@@ -330,7 +330,8 @@ fn change_dependency_moves_every_crate_naming_it_and_keeps_what_else_the_entry_s
     let o = apply(root, &spec(root, "shop-versioned", "name = \"shop-versioned\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"*\"\n\n[[dependencies]]\nname = \"shop\"\nversion = \"0.1.0\"\npath = \"../shop\"\n"));
     assert!(read(root, "app/Cargo.toml").contains("shop = { path = \"../shop\", version = \"0.1.0\" }"), "{}", read(root, "app/Cargo.toml"));
     assert!(o.record.postconditions.contains(&("source app/Cargo.toml shop 0.1.0 ../shop".to_string(), true)), "{:?}", o.record.postconditions);
-    assert_eq!(o.record.files.len(), 1);
+    // the manifest, and the lock file when cargo's proof wrote it anew (code_passenger 0.4.4)
+    assert_eq!(o.record.files.iter().filter(|f| f.path != "Cargo.lock").count(), 1, "{:?}", o.record.files);
     // the text rule: a version alone is the registry's, the path dropped, a bare string when nothing else is on it;
     // features given replace the entry's; every dependency table, a target's too, and a renamed package
     let text = "[dependencies]\nx = { path = \"../x\" } # the copy\ny = { path = \"../y\", features = [\"a\"], optional = true }\n\n[dev-dependencies]\nx = { version = \"0.1\", path = \"../x\" }\n\n[target.'cfg(unix)'.dependencies]\nz = { package = \"x\", path = \"../x\" }\n";
