@@ -18,6 +18,10 @@ pub struct CargoOracle {
     /// Package → manifest, from cargo metadata once (rule A2).
     manifests: Option<BTreeMap<String, PathBuf>>,
     pub offline: bool,
+    /// Check the tests too (`--tests`, with the library and binaries): a transform's proof.
+    pub tests: bool,
+    /// The packages with a library target, read with the manifests.
+    libs: Option<BTreeSet<String>>,
 }
 
 fn internal(message: String) -> OracleResult {
@@ -29,7 +33,7 @@ fn internal(message: String) -> OracleResult {
 
 impl CargoOracle {
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf(), workspace: None, scratch: None, touched: BTreeSet::new(), manifests: None, offline: true }
+        Self { root: root.to_path_buf(), workspace: None, scratch: None, touched: BTreeSet::new(), manifests: None, offline: true, tests: false, libs: None }
     }
 
     /// The workspace the scratch copy mirrors, once a check has run.
@@ -50,11 +54,18 @@ impl CargoOracle {
     }
 
     fn manifest_of(&mut self, package: &str) -> Result<PathBuf, String> {
+        self.read_packages()?;
+        self.manifests.as_ref().and_then(|m| m.get(&package.replace('-', "_")).cloned()).ok_or_else(|| format!("no workspace member named `{package}`"))
+    }
+
+    /// The packages' manifests and which of them have a library, from cargo metadata once.
+    fn read_packages(&mut self) -> Result<(), String> {
         if self.manifests.is_none() {
             let b = crate::cargo::builder(&self.root).map_err(|e| e.to_string())?;
             self.manifests = Some(b.packages().iter().map(|(n, p)| (n.clone(), p.manifest_path.clone())).collect());
+            self.libs = Some(b.packages().iter().filter(|(_, p)| p.targets.iter().any(|t| matches!(t.kind.as_str(), "lib" | "rlib" | "proc-macro" | "cdylib" | "dylib" | "staticlib"))).map(|(n, _)| n.clone()).collect());
         }
-        self.manifests.as_ref().and_then(|m| m.get(&package.replace('-', "_")).cloned()).ok_or_else(|| format!("no workspace member named `{package}`"))
+        Ok(())
     }
 
     /// Rule O1 for one package's plan.
@@ -108,7 +119,15 @@ impl CargoOracle {
         let target_dir = self.scratch.as_ref().map(|d| d.path().join("target")).unwrap_or_else(|| cwd.join("target"));
         let cwd = cwd.to_path_buf();
         // the declared line (`crate::lines::Cargo`), run by the cargo that runs us
-        let line = crate::lines::cargo_check(job, self.offline);
+        let line = if self.tests {
+            if let Err(e) = self.read_packages() {
+                return internal(e);
+            }
+            let has_lib = self.libs.as_ref().is_some_and(|l| l.contains(&job.package.replace('-', "_")));
+            crate::lines::cargo_check_with_tests(job, self.offline, has_lib)
+        } else {
+            crate::lines::cargo_check(job, self.offline)
+        };
         if let Err(e) = xccute_contract::ValidatedCommand::validate(&line) {
             return internal(format!("the cargo check line was refused: {e}"));
         }

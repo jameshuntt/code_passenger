@@ -1,0 +1,11 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shop = { path = "../shop" }
+
+[[bin]]
+name = "shopcli"
+path = "src/main.rs"

@@ -532,7 +532,8 @@ fn transform_valid(line: &Transform) -> CommandValidationResult {
 #[composite(command = "check", ty = CargoCheck, init = "package")]
 pub struct Cargo;
 
-/// `cargo check -p PACKAGE --message-format=json [--no-default-features] [--features A,B] [--offline]`.
+/// `cargo check -p PACKAGE --message-format=json [--no-default-features] [--features A,B] [--offline] [--lib] [--bins]
+/// [--tests]`.
 #[allow(clippy::duplicated_attributes)]
 #[derive(SimpleSubCommand, Debug, Clone, Default)]
 #[subcommand(segment = "check")]
@@ -551,6 +552,25 @@ pub struct CargoCheck {
     pub features: Option<OsString>,
     #[arg(flag = "--offline")]
     pub offline: bool,
+    /// The library (a package without one is never asked for it: cargo refuses `--lib` there).
+    #[arg(flag = "--lib")]
+    pub lib: bool,
+    #[arg(flag = "--bins")]
+    pub bins: bool,
+    /// Every target built as a test: the code in `#[cfg(test)]` modules and the integration tests.
+    #[arg(flag = "--tests")]
+    pub tests: bool,
+}
+
+/// The declared line for one job of klepto's check matrix, every target its package has with the tests: the library
+/// (when it has one) and the binaries as they build, then each of them and the integration tests as tests. A
+/// transform's proof: a change inside a test module compiles at transform time, not at the first `cargo test`.
+pub fn cargo_check_with_tests(job: &klepto::CheckJob, offline: bool, has_lib: bool) -> CargoCheckRooted<Cargo> {
+    let mut line = cargo_check(job, offline).bins().tests();
+    if has_lib {
+        line = line.lib();
+    }
+    line
 }
 
 /// The declared line for one job of klepto's check matrix.
@@ -1262,7 +1282,9 @@ fn receipt_for(line: &Line, code: i32, stdout: &str, outputs: &[PathBuf], millis
     let Some(store) = custodian_kit::store::Store::find(&root) else { return (word, Some(receipt), None) };
     let walked = exec::Walked { operation: op, receipt: receipt.clone(), decision, code: Some(code), stdout: stdout.to_string(), stderr: String::new(), millis };
     let rel = |p: &PathBuf| p.strip_prefix(&store.root).unwrap_or(p).to_string_lossy().replace('\\', "/");
-    let r = custodian_kit::runs::receipt_of(&plan, &walked, "code-passenger", line.command(), None, None, None, None, outputs.iter().map(rel).collect(), None);
+    // a job open in the project: the run is the job's, its receipt under it (a dry run's too)
+    let in_job = custodian_kit::preflight::job_view(&store).filter(|(v, _)| !v.id.is_empty()).map(|(v, folder)| custodian_kit::runs::InJob { id: v.id, readings: folder.join(custodian_kit::jobs::READINGS_DIR) });
+    let r = custodian_kit::runs::receipt_of(&plan, &walked, "code-passenger", line.command(), None, None, None, None, outputs.iter().map(rel).collect(), in_job.as_ref());
     match custodian_kit::runs::keep(&store, r) {
         Ok((_, file)) => (word, Some(receipt), Some(file)),
         Err(_) => (word, Some(receipt), None),

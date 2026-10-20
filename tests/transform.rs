@@ -174,11 +174,12 @@ fn add_attribute_gate_and_anchor_go_above_the_item() {
     let d = common::fresh_copy("transform_ws");
     let root = d.path();
     apply(root, &spec(root, "must", "name = \"must\"\nobjective = \"o\"\noperation = \"add_attribute\"\ntarget = \"shop::total_of\"\nattribute = \"#[must_use]\"\n"));
-    apply(root, &spec(root, "gate", "name = \"gate\"\nobjective = \"o\"\noperation = \"gate\"\ntarget = \"shop::version\"\nfeature = \"audit\"\n"));
+    // `label`: nothing outside it uses it (`version` is used by the golden tests, which the proof compiles too)
+    apply(root, &spec(root, "gate", "name = \"gate\"\nobjective = \"o\"\noperation = \"gate\"\ntarget = \"shop::label\"\nfeature = \"audit\"\n"));
     apply(root, &spec(root, "anchor", "name = \"anchor\"\nobjective = \"o\"\noperation = \"anchor\"\ntarget = \"shop::Order\"\nlinkage = \"order-and-receipt\"\n"));
     let t = read(root, "shop/src/lib.rs");
     assert!(t.contains("#[must_use]\npub fn total_of"));
-    assert!(t.contains("#[cfg(feature = \"audit\")]\npub fn version"));
+    assert!(t.contains("#[cfg(feature = \"audit\")]\npub fn label"));
     assert!(t.contains("// linkage: order-and-receipt (.custodian/data/linkage/v1.order-and-receipt.1o.linkage)\npub struct Order"), "{t}");
 }
 
@@ -237,7 +238,8 @@ fn move_and_extract_keep_the_old_paths_through_a_re_export() {
 
 #[test]
 fn every_operation_of_the_vocabulary_has_its_test_here() {
-    let here = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/transform.rs")).unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let here = std::fs::read_to_string(dir.join("transform.rs")).unwrap() + &std::fs::read_to_string(dir.join("transform_more.rs")).unwrap();
     for op in custodian_kit::change::Operation::ALL {
         assert!(here.contains(&format!("operation = \\\"{}\\\"", op.as_str())) || here.contains(&format!("operation = \"{}\"", op.as_str())), "no test applies {}", op.as_str());
     }

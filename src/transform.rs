@@ -337,26 +337,159 @@ impl<'ast> Visit<'ast> for Literals {
 
 struct Calls {
     want: BTreeSet<(usize, usize)>,
+    /// The function's name: a call is one of its calls only when it names it.
+    name: String,
     /// The closing paren of each call found, and whether it has arguments.
     found: Vec<(LineColumn, bool)>,
+    /// The wanted places met.
+    met: BTreeSet<(usize, usize)>,
+}
+
+impl Calls {
+    fn new(want: BTreeSet<(usize, usize)>, name: &str) -> Calls {
+        Calls { want, name: name.to_string(), found: Vec::new(), met: BTreeSet::new() }
+    }
+
+    fn meet(&mut self, at: &[LineColumn]) -> bool {
+        let hits: Vec<(usize, usize)> = at.iter().map(|s| (s.line, s.column)).filter(|k| self.want.contains(k)).collect();
+        self.met.extend(hits.iter().copied());
+        !hits.is_empty()
+    }
 }
 
 impl<'ast> Visit<'ast> for Calls {
     fn visit_expr_call(&mut self, e: &'ast syn::ExprCall) {
-        let s = e.func.span().start();
-        if self.want.contains(&(s.line, s.column)) {
+        let names_it = matches!(&*e.func, syn::Expr::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == self.name.as_str()));
+        if names_it && self.meet(&[e.func.span().start()]) {
             self.found.push((e.paren_token.span.close().start(), !e.args.is_empty()));
         }
         syn::visit::visit_expr_call(self, e);
     }
 
     fn visit_expr_method_call(&mut self, e: &'ast syn::ExprMethodCall) {
-        let s = e.method.span().start();
-        if self.want.contains(&(s.line, s.column)) {
+        // klepto places a method call at its receiver; the method's own name is the other place a call is named at
+        if e.method == self.name.as_str() && self.meet(&[e.receiver.span().start(), e.method.span().start()]) {
             self.found.push((e.paren_token.span.close().start(), !e.args.is_empty()));
         }
         syn::visit::visit_expr_method_call(self, e);
     }
+}
+
+/// The byte offset of the parenthesis that closes the one at `open`, strings and characters skipped.
+fn matching_paren(text: &str, open: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (b[i] == b')').then_some(i);
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' if i + 2 < b.len() && (b[i + 2] == b'\'' || b[i + 1] == b'\\') => {
+                i += 1;
+                while i < b.len() && b[i] != b'\'' {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The arguments between `open` and `close` (the call's parentheses), split at the commas outside any bracket or
+/// string, each as its text, trimmed.
+fn arguments(text: &str, open: usize, close: usize) -> Vec<String> {
+    let inner = &text[open + 1..close];
+    let mut out = Vec::new();
+    let (mut depth, mut start, mut in_str, mut esc) = (0i32, 0usize, false, false);
+    for (i, c) in inner.char_indices() {
+        if in_str {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        out.push(last.to_string());
+    }
+    out
+}
+
+/// A call klepto found where syn does not look (inside a macro's tokens): from klepto's place for it (the callee's
+/// path, or a method call's receiver), the first `name` after it on its line that is a whole word followed by its
+/// argument list. Its `(` and `)` byte offsets.
+fn call_in_text(text: &str, line: u32, column: Option<u32>, name: &str) -> Option<(usize, usize)> {
+    let (l, c) = syn_at(line, column);
+    let starts = [offset(text, LineColumn { line: l, column: c }), offset(text, LineColumn { line: l, column: c + 1 })];
+    let from = starts.into_iter().min()?;
+    let end = text[from..].find('\n').map(|e| from + e).unwrap_or(text.len());
+    let mut at = from;
+    while let Some(i) = text[at..end].find(name) {
+        let a = at + i;
+        let before = text[..a].chars().last();
+        let mut rest = a + name.len();
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !word(before) && !word(text[rest..].chars().next()) {
+            // a turbofish between the name and its arguments
+            let tail = text[rest..].trim_start();
+            rest = text.len() - tail.len();
+            if tail.starts_with("::<") {
+                let mut depth = 0;
+                for (j, ch) in tail.char_indices() {
+                    match ch {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                rest += j + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest = text.len() - text[rest..].trim_start().len();
+            }
+            if text[rest..].starts_with('(') {
+                return matching_paren(text, rest).map(|close| (rest, close));
+            }
+        }
+        at = a + name.len();
+    }
+    None
 }
 
 /// klepto's `(file, line, column)` (column 1-based or 0-based as it records) as syn's `(line, column 0-based)`.
@@ -379,6 +512,8 @@ struct Planned {
     tree: Tree,
     generated: Vec<String>,
     listed: Vec<String>,
+    /// What else the edits do, said for a person (an import dropped or carried, a function removed).
+    also: Vec<String>,
     /// `exists <id>`, `field <type> <name>`, `variant <enum> <name>`, `method <type> <name>`, `absent <id>`, `text <file> <line>`.
     facts: Vec<String>,
 }
@@ -398,7 +533,11 @@ fn module_path_of(id: &str) -> &str {
 /// The edits an operation makes, unwritten.
 fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> Result<Planned> {
     use Operation::*;
-    let mut p = Planned { tree: Tree::default(), generated: Vec::new(), listed: Vec::new(), facts: Vec::new() };
+    let mut p = Planned { tree: Tree::default(), generated: Vec::new(), listed: Vec::new(), also: Vec::new(), facts: Vec::new() };
+    // an attribute macro that rewrites the item: the operation writes it as declared, which the macro does not keep
+    if let Some(why) = land.item.as_deref().and_then(|i| change::rewritten_by(k, spec.op(), i)) {
+        return Err(refused(why));
+    }
     let file = abs(root, &land.file);
     let item = land.item.clone().unwrap_or_default();
     let line_of = |at: &At| -> u32 {
@@ -705,6 +844,126 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                 p.facts.push(format!("text {} {first}", land.file));
             }
         }
+        Inline => {
+            let blockers = change::inline_blockers(k, &item);
+            if !blockers.is_empty() {
+                return Err(refused(blockers.join("; ")));
+            }
+            let f = k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            let name = ty_name(&item).to_string();
+            // its parameters and body, as they are written
+            let decl = canon(&f.location.path);
+            let dtext = p.tree.text(&decl)?.clone();
+            let parsed = parse(&dtext, &decl)?;
+            let mut fv = FnText { name: name.clone(), line: f.location.line.unwrap_or(1) as usize, found: None };
+            fv.visit_file(&parsed);
+            let (params, body_span, item_span) = fv.found.ok_or_else(|| refused(format!("{item}: no body at {}:{}", land.file, f.location.line.unwrap_or(0))))?;
+            let params: Vec<(String, String)> = params.iter().map(|(a, b, c, d)| (dtext[offset(&dtext, *a)..offset(&dtext, *b)].to_string(), dtext[offset(&dtext, *c)..offset(&dtext, *d)].to_string())).collect();
+            let body = dtext[offset(&dtext, body_span.0)..offset(&dtext, body_span.1)].to_string();
+            let mut splices: BTreeMap<PathBuf, Vec<Splice>> = BTreeMap::new();
+            let mut by_file: BTreeMap<PathBuf, Vec<(u32, Option<u32>)>> = BTreeMap::new();
+            for c in &k.calls {
+                if matches!(&c.resolution, Some(klepto::Resolution::Local(id) | klepto::Resolution::External(id)) if *id == item)
+                    && let Some(l) = c.location.line {
+                        by_file.entry(canon(&c.location.path)).or_default().push((l, c.location.column));
+                    }
+            }
+            let mut calls = 0;
+            for (cf, places) in by_file {
+                let t = p.tree.text(&cf)?.clone();
+                // each call: from the callee's path to its closing parenthesis, its arguments as written
+                let mut at: Vec<(usize, usize, Vec<String>)> = Vec::new();
+                for (l, c) in places {
+                    let (open, close) = call_in_text(&t, l, c, &name).ok_or_else(|| refused(format!("{}:{l}: klepto names a call of {name} there and none is in the text", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default())))?;
+                    // the call starts at its path: back from the name over `seg::` and whitespace
+                    let name_at = t[..open].trim_end().len() - name.len();
+                    let mut start = name_at;
+                    loop {
+                        let before = t[..start].trim_end();
+                        if let Some(b) = before.strip_suffix("::") {
+                            let b = b.trim_end();
+                            let seg = b.len() - b.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum::<usize>();
+                            start = seg;
+                        } else {
+                            break;
+                        }
+                    }
+                    at.push((start, close + 1, arguments(&t, open, close)));
+                }
+                at.sort();
+                at.dedup();
+                if at.windows(2).any(|w| w[1].0 < w[0].1) {
+                    return Err(refused(format!("{}: a call of {name} sits inside another's arguments; inline it in two specs", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default())));
+                }
+                for (a, b, args) in at {
+                    let mut block = change::render_inlined(&params, &args, &body).map_err(|e| refused(format!("{}: {e}", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default())))?;
+                    // a block where a statement starts, with more of the expression after it, would end there: in
+                    // parentheses it stays the expression's first operand
+                    let before = t[..a].trim_end();
+                    let after = t[b..].trim_start();
+                    let starts_statement = before.is_empty() || before.ends_with(['{', ';', '}']) || before.ends_with("=>");
+                    if starts_statement && !after.starts_with([';', '}', ',', ')']) {
+                        block = format!("({block})");
+                    }
+                    p.generated.push(block.clone());
+                    splices.entry(cf.clone()).or_default().push((a, b, block));
+                    calls += 1;
+                }
+            }
+            // the function goes when nothing outside the crate can name it and every use was a call
+            if !f.is_public {
+                let lines: Vec<String> = dtext.lines().map(str::to_string).collect();
+                let lead = crate::gate::leading(&lines, item_span.0.line - 1);
+                let first = lead.attrs.first().map(|(a, _)| *a).unwrap_or(lead.decl).min(item_span.0.line - 1);
+                // its doc lines above it go with it
+                let mut from = first;
+                while from > 0 && lines[from - 1].trim_start().starts_with("///") {
+                    from -= 1;
+                }
+                let (a, mut b) = (line_start(&dtext, from + 1), line_end(&dtext, item_span.1.line));
+                // and one blank line after it, so no two blank lines are left
+                if dtext[b..].starts_with('\n') && (a == 0 || dtext[..a].ends_with("\n\n")) {
+                    b += 1;
+                }
+                splices.entry(decl.clone()).or_default().push((a, b, String::new()));
+                p.facts.push(format!("absent {item}"));
+                p.also.push(format!("{item} removed: not pub, and its {calls} calls are inlined"));
+            } else {
+                p.also.push(format!("{item} kept: it is pub, and other crates may name it"));
+            }
+            for (f, e) in splices {
+                splice(p.tree.text(&f)?, e);
+            }
+            p.facts.push(format!("calls {item} 0"));
+        }
+        Wrap => {
+            let f = spec.function.as_ref().ok_or_else(|| refused("wrap needs function"))?;
+            k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            if f.name != ty_name(&item) {
+                return Err(refused(format!("{item}: the spec's function is {}, not this one", f.name)));
+            }
+            let t = p.tree.text(&file)?;
+            let sp = item_at(t, &file, line_of(&land.at))?;
+            let open = sp.body_open.ok_or_else(|| refused(format!("{item}: no body")))?;
+            let (a, b) = (offset(t, open), offset(t, sp.end));
+            if !t[a..b].ends_with('}') {
+                return Err(refused(format!("{item}: its body does not end at the item's end")));
+            }
+            let lines: Vec<String> = t.lines().map(str::to_string).collect();
+            let lead = crate::gate::leading(&lines, sp.start.line - 1);
+            let indent = indent_of(t, lead.decl + 1);
+            // the old body moves one level in, unless a string in it runs over lines (its text would change)
+            let old = t[a..b].to_string();
+            let old = if spans_lines_in_a_string(&old) { old } else { old.lines().enumerate().map(|(i, l)| if i == 0 || l.trim().is_empty() { l.to_string() } else { format!("    {l}") }).collect::<Vec<_>>().join("\n") };
+            let body = change::render_wrapped(f, &indent, &old).map_err(refused)?;
+            t.replace_range(a..b, &body);
+            let first = body.lines().nth(1).unwrap_or("").trim().to_string();
+            p.generated.push(body);
+            if !first.is_empty() {
+                p.facts.push(format!("text {} {first}", land.file));
+            }
+            p.facts.push(format!("exists {item}"));
+        }
         ChangeDependency => {
             for c in change::dependency_changes(k, root, spec).map_err(refused)? {
                 let path = abs(root, &c.manifest);
@@ -737,30 +996,41 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             let new_sig = change::signature(&sig);
             splices.entry(canon(&file)).or_default().push((a, b, format!("{new_sig} ")));
             p.generated.push(new_sig.clone());
-            let added = f.params.len() > old.args.len();
+            // parameters, the receiver aside: klepto's args hold `self` too
+            let added = f.params.len() > old.args.iter().filter(|a| !change::is_receiver(a)).count();
             let name = f.name.clone();
             // its calls: the new argument at the end, when the spec gives it
             if added {
-                let mut by_file: BTreeMap<PathBuf, BTreeSet<(usize, usize)>> = BTreeMap::new();
+                // every call klepto resolves to it, wherever it is (a binary's too, and a method's by its receiver);
+                // one inside a macro's tokens, where syn does not look, found in the text from klepto's place
+                let old_name = ty_name(&item).to_string();
+                let mut by_file: BTreeMap<PathBuf, Vec<(u32, Option<u32>)>> = BTreeMap::new();
                 for c in &k.calls {
                     if matches!(&c.resolution, Some(klepto::Resolution::Local(id) | klepto::Resolution::External(id)) if *id == item)
                         && let Some(l) = c.location.line {
-                            by_file.entry(c.location.path.clone()).or_default().extend(both(l, c.location.column));
+                            by_file.entry(canon(&c.location.path)).or_default().push((l, c.location.column));
                         }
                 }
-                for (cf, want) in by_file {
-                    let cf = canon(&cf);
+                for (cf, places) in by_file {
                     let t = p.tree.text(&cf)?.clone();
                     let parsed = parse(&t, &cf)?;
-                    let mut v = Calls { want, found: Vec::new() };
+                    let mut v = Calls::new(places.iter().flat_map(|(l, c)| both(*l, *c)).collect(), &old_name);
                     v.visit_file(&parsed);
-                    for (close, has_args) in v.found {
+                    let mut closes: Vec<(usize, bool)> = v.found.iter().map(|(close, has)| (offset(&t, *close), *has)).collect();
+                    for (l, c) in places.iter().filter(|(l, c)| !both(*l, *c).iter().any(|k| v.met.contains(k))) {
+                        match call_in_text(&t, *l, *c, &old_name) {
+                            Some((open, close)) => closes.push((close, !t[open + 1..close].trim().is_empty())),
+                            None => p.listed.push(format!("call {}:{l}: klepto names it, and no call of {old_name} is there to give the new argument", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default())),
+                        }
+                    }
+                    closes.sort();
+                    closes.dedup();
+                    for (at, has_args) in closes {
                         match spec.call_sites.as_ref().and_then(|c| c.pass.clone()) {
                             Some(pass) => {
-                                let at = offset(&t, close);
                                 splices.entry(cf.clone()).or_default().push((at, at, if has_args { format!(", {pass}") } else { pass.clone() }));
                             }
-                            None => p.listed.push(format!("call {}:{}: needs the new argument", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default(), close.line)),
+                            None => p.listed.push(format!("call {}:{}: needs the new argument", relative(root, &cf).map(|r| r.display().to_string()).unwrap_or_default(), t[..at].matches('\n').count() + 1)),
                         }
                     }
                 }
@@ -769,7 +1039,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                 splice(p.tree.text(&f)?, e);
             }
             let new_id = format!("{}::{name}", module_path_of(&item));
-            p.facts.push(format!("args {new_id} {}", f.params.len()));
+            p.facts.push(format!("args {new_id} {}", f.params.len() + usize::from(f.receiver.is_some() || old.args.iter().any(|a| change::is_receiver(a)))));
             if name != ty_name(&item) {
                 p.facts.push(format!("absent {item}"));
             }
@@ -834,17 +1104,43 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             let sp = item_at(t, &file, d.location.line.unwrap_or(1))?;
             let (a, b) = (line_start(t, sp.start.line), line_end(t, sp.end.line));
             let moved = t[a..b].to_string();
+            let source_text = t.clone();
             let vis = if d.is_public { "pub " } else { "pub(crate) " };
             let target_path = format!("crate::{}", dest_module.split_once("::").map(|(_, r)| r).unwrap_or(""));
             t.replace_range(a..b, &format!("{vis}use {}::{};\n", target_path.trim_end_matches("::"), d.name));
+            // the destination's own imports of the item go: the item is declared there now
+            let dest_c = canon(&dest);
+            let import_lines: BTreeSet<usize> = k
+                .imports
+                .iter()
+                .filter(|i| canon(&i.location.path) == dest_c && matches!(&i.resolution, Some(klepto::Resolution::Local(id) | klepto::Resolution::External(id)) if *id == item))
+                .filter_map(|i| i.location.line.map(|l| l as usize))
+                .collect();
+            if !import_lines.is_empty() {
+                let dt = p.tree.text(&dest)?;
+                let dropped = drop_imports(dt, &dest, &import_lines, &d.name)?;
+                for l in dropped {
+                    p.also.push(format!("import {}:{l}: {} is declared there now, its import dropped", to, d.name));
+                }
+            }
             let dt = p.tree.text(&dest)?;
             // the moved item keeps resolving the names of the module it left
             let old_module = format!("crate::{}", d.module.split_once("::").map(|(_, r)| r).unwrap_or("")).trim_end_matches("::").to_string();
             let glob = format!("use {old_module}::*;");
+            // and the names the module it left imports privately (a glob does not carry those) that the item uses
+            let declared: BTreeSet<String> = k.modules.get(&dest_module).map(|m| m.items.keys().cloned().collect()).unwrap_or_default();
+            let carried = imports_carried(&source_text, &file, &d.module, &moved, dt, &dest, &dest_module, &declared)?;
+            let mut head: Vec<String> = carried.clone();
             if !dt.lines().any(|l| l.trim() == glob) {
+                head.insert(0, glob.clone());
+            }
+            if !head.is_empty() {
                 let parsed = parse(dt, &dest)?;
                 let at = parsed.items.first().map(|i| line_start(dt, i.span().start().line)).unwrap_or(dt.len());
-                dt.insert_str(at, &format!("{glob}\n\n"));
+                dt.insert_str(at, &format!("{}\n\n", head.join("\n")));
+            }
+            for c in &carried {
+                p.also.push(format!("{to} gets `{c}`: {} uses the name, imported where it was", d.name));
             }
             if !dt.ends_with('\n') {
                 dt.push('\n');
@@ -908,6 +1204,209 @@ fn rename_word(line: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// A function's text by its name and line: each parameter's pattern and type (their spans) and its body's span
+/// (`{` to `}`), and the item's own span.
+#[allow(clippy::type_complexity)]
+struct FnText {
+    name: String,
+    line: usize,
+    found: Option<(Vec<(LineColumn, LineColumn, LineColumn, LineColumn)>, (LineColumn, LineColumn), (LineColumn, LineColumn))>,
+}
+
+impl FnText {
+    fn take(&mut self, sig: &syn::Signature, block: &syn::Block, span: proc_macro2::Span) {
+        if sig.ident != self.name.as_str() || !(span.start().line..=span.end().line).contains(&self.line) {
+            return;
+        }
+        let params = sig
+            .inputs
+            .iter()
+            .filter_map(|a| match a {
+                syn::FnArg::Typed(t) => Some((t.pat.span().start(), t.pat.span().end(), t.ty.span().start(), t.ty.span().end())),
+                syn::FnArg::Receiver(_) => None,
+            })
+            .collect();
+        self.found = Some((params, (block.brace_token.span.open().start(), block.brace_token.span.close().end()), (span.start(), span.end())));
+    }
+}
+
+impl<'ast> Visit<'ast> for FnText {
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        self.take(&f.sig, &f.block, f.span());
+        syn::visit::visit_item_fn(self, f);
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        self.take(&f.sig, &f.block, f.span());
+        syn::visit::visit_impl_item_fn(self, f);
+    }
+}
+
+/// Whether a string literal in `block` (a body's text) runs over more than one line.
+fn spans_lines_in_a_string(block: &str) -> bool {
+    struct Lits(bool);
+    impl<'ast> Visit<'ast> for Lits {
+        fn visit_lit(&mut self, l: &'ast syn::Lit) {
+            if l.span().start().line != l.span().end().line {
+                self.0 = true;
+            }
+        }
+        fn visit_macro(&mut self, m: &'ast syn::Macro) {
+            if m.tokens.clone().into_iter().any(|t| t.span().start().line != t.span().end().line) {
+                self.0 = true;
+            }
+        }
+    }
+    match syn::parse_str::<syn::Block>(block) {
+        Ok(b) => {
+            let mut v = Lits(false);
+            v.visit_block(&b);
+            v.0
+        }
+        Err(_) => true,
+    }
+}
+
+/// A `use` tree's leaves: each name's path from the tree's root and the name it binds (`None` for a glob).
+fn use_leaves(t: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<(Vec<String>, Option<String>)>) {
+    match t {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            use_leaves(&p.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) if n.ident == "self" => out.push((prefix.clone(), prefix.last().cloned())),
+        syn::UseTree::Name(n) => out.push(([prefix.clone(), vec![n.ident.to_string()]].concat(), Some(n.ident.to_string()))),
+        syn::UseTree::Rename(r) => {
+            let path = if r.ident == "self" { prefix.clone() } else { [prefix.clone(), vec![r.ident.to_string()]].concat() };
+            out.push((path, Some(r.rename.to_string())))
+        }
+        syn::UseTree::Glob(_) => out.push((prefix.clone(), None)),
+        syn::UseTree::Group(g) => g.items.iter().for_each(|i| use_leaves(i, prefix, out)),
+    }
+}
+
+/// The names a moved item takes with it: each private `use` of the module it left (`module`, klepto's path, its
+/// first segment the crate) that binds a name the item's text uses, and that the destination neither declares nor
+/// imports, as a `use` line written from the crate's root.
+#[allow(clippy::too_many_arguments)]
+fn imports_carried(source: &str, source_path: &Path, module: &str, moved: &str, dest: &str, dest_path: &Path, dest_module: &str, declared: &BTreeSet<String>) -> Result<Vec<String>> {
+    let src = parse(source, source_path)?;
+    let dst = parse(dest, dest_path)?;
+    // what the destination declares (klepto's, which sees what its macros make) and imports
+    let mut taken: BTreeSet<String> = declared.clone();
+    let dest_abs: Vec<String> = std::iter::once("crate".to_string()).chain(dest_module.split("::").skip(1).map(str::to_string)).collect();
+    for i in &dst.items {
+        let declared = match i {
+            syn::Item::Use(u) => {
+                let mut leaves = Vec::new();
+                use_leaves(&u.tree, &mut Vec::new(), &mut leaves);
+                taken.extend(leaves.into_iter().filter_map(|(_, n)| n));
+                None
+            }
+            syn::Item::Struct(x) => Some(&x.ident),
+            syn::Item::Enum(x) => Some(&x.ident),
+            syn::Item::Fn(x) => Some(&x.sig.ident),
+            syn::Item::Trait(x) => Some(&x.ident),
+            syn::Item::Type(x) => Some(&x.ident),
+            syn::Item::Const(x) => Some(&x.ident),
+            syn::Item::Static(x) => Some(&x.ident),
+            syn::Item::Mod(x) => Some(&x.ident),
+            _ => None,
+        };
+        taken.extend(declared.map(|i| i.to_string()));
+    }
+    let here: Vec<String> = module.split("::").skip(1).map(str::to_string).collect();
+    let word = |name: &str| {
+        let mut rest = moved;
+        while let Some(i) = rest.find(name) {
+            let w = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if !w(rest[..i].chars().last()) && !w(rest[i + name.len()..].chars().next()) {
+                return true;
+            }
+            rest = &rest[i + name.len()..];
+        }
+        false
+    };
+    let mut out = Vec::new();
+    for i in &src.items {
+        let syn::Item::Use(u) = i else { continue };
+        if !matches!(u.vis, syn::Visibility::Inherited) {
+            continue;
+        }
+        let mut leaves = Vec::new();
+        use_leaves(&u.tree, &mut Vec::new(), &mut leaves);
+        for (path, name) in leaves {
+            let Some(name) = name else { continue };
+            if taken.contains(&name) || !word(&name) {
+                continue;
+            }
+            // from the crate's root: `self::` and `super::` read from the module it was in
+            let abs: Vec<String> = match path.first().map(String::as_str) {
+                Some("self") => [vec!["crate".to_string()], here.clone(), path[1..].to_vec()].concat(),
+                Some("super") => {
+                    let ups = path.iter().take_while(|s| *s == "super").count();
+                    [vec!["crate".to_string()], here[..here.len().saturating_sub(ups)].to_vec(), path[ups..].to_vec()].concat()
+                }
+                _ => path.clone(),
+            };
+            // a name of the destination itself needs no import there
+            if abs.is_empty() || abs[..abs.len() - 1] == dest_abs[..] {
+                continue;
+            }
+            let last = abs.last().cloned().unwrap_or_default();
+            let line = if last == name { format!("use {};", abs.join("::")) } else { format!("use {} as {name};", abs.join("::")) };
+            taken.insert(name);
+            out.push(line);
+        }
+    }
+    Ok(out)
+}
+
+/// A `use` tree with the leaves that import `name` taken out; `None` when nothing is left.
+fn use_without(t: &syn::UseTree, name: &str) -> Option<String> {
+    match t {
+        syn::UseTree::Path(p) => use_without(&p.tree, name).map(|rest| format!("{}::{rest}", p.ident)),
+        syn::UseTree::Name(n) => (n.ident != name).then(|| n.ident.to_string()),
+        syn::UseTree::Rename(r) => Some(format!("{} as {}", r.ident, r.rename)),
+        syn::UseTree::Glob(_) => Some("*".into()),
+        syn::UseTree::Group(g) => {
+            let kept: Vec<String> = g.items.iter().filter_map(|i| use_without(i, name)).collect();
+            (!kept.is_empty()).then(|| format!("{{{}}}", kept.join(", ")))
+        }
+    }
+}
+
+/// The `use` items at `lines` of a file lose their import of `name`; a `use` left importing nothing is removed. The
+/// lines whose imports were dropped.
+fn drop_imports(text: &mut String, path: &Path, lines: &BTreeSet<usize>, name: &str) -> Result<Vec<usize>> {
+    let parsed = parse(text, path)?;
+    let mut edits: Vec<Splice> = Vec::new();
+    let mut dropped = Vec::new();
+    for i in &parsed.items {
+        let syn::Item::Use(u) = i else { continue };
+        let (a, b) = (u.span().start().line, u.span().end().line);
+        if !lines.iter().any(|l| (a..=b).contains(l)) {
+            continue;
+        }
+        match use_without(&u.tree, name) {
+            Some(kept) => {
+                let (x, y) = (offset(text, u.tree.span().start()), offset(text, u.tree.span().end()));
+                if text[x..y].replace(char::is_whitespace, "") != kept.replace(char::is_whitespace, "") {
+                    edits.push((x, y, kept));
+                    dropped.push(a);
+                }
+            }
+            None => {
+                edits.push((line_start(text, i.span().start().line), line_end(text, b), String::new()));
+                dropped.push(a);
+            }
+        }
+    }
+    splice(text, edits);
+    Ok(dropped)
+}
+
 /// The packages a check covers: the one it lands in and every one that depends on it.
 fn checked_packages(k: &klepto::Klepto, package: &str) -> Vec<String> {
     let mut out = BTreeSet::from([package.to_string()]);
@@ -935,7 +1434,10 @@ fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
         ["impl", t, tr] => k.impls_of(t).iter().any(|i| i.trait_.as_ref().is_some_and(|x| x.raw.rsplit("::").next().is_some_and(|n| tr.contains(n) || n.contains(tr.trim_start_matches("impl_")))) ),
         ["derive", t, d] => k.type_decl(t).is_some_and(|x| x.derives.iter().any(|r| matches!(r, klepto::Resolution::Local(p) | klepto::Resolution::External(p) if p.rsplit("::").next() == Some(d.rsplit("::").next().unwrap_or(d))) || matches!(r, klepto::Resolution::Unresolved { raw, .. } if raw.ends_with(*d)))),
         ["module", m] => k.modules.get(m).is_some(),
-        ["dependency", p, d] => k.features.get(*p).is_some_and(|m| m.dependencies.iter().any(|x| x.name == *d)),
+        // a dependency's name as cargo reads it: `big-bad-bool` and `big_bad_bool` are one name
+        ["dependency", p, d] => k.features.get(&p.replace('-', "_")).or_else(|| k.features.get(*p)).is_some_and(|m| m.dependencies.iter().any(|x| x.name.replace('-', "_") == d.replace('-', "_"))),
+        // `calls <id> <n>`: how many calls klepto resolves to it
+        ["calls", id, n] => k.calls.iter().filter(|c| matches!(&c.resolution, Some(klepto::Resolution::Local(x) | klepto::Resolution::External(x)) if x == id)).count().to_string() == *n,
         ["args", id, n] => k.functions.iter().find(|f| f.fq_name == *id).is_some_and(|f| f.args.len().to_string() == *n),
         ["text", f, line] => std::fs::read_to_string(root.join(f)).is_ok_and(|t| t.lines().any(|l| l.trim() == line.trim())),
         // `source <manifest> <dependency> <version|-> <path|->`: the manifest names it from there
@@ -993,6 +1495,8 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     // the proof: cargo over the check matrix of the crate and its dependents, on a scratch copy; then a fresh scan
     let mut checks = Vec::new();
     let mut oracle = crate::oracle::CargoOracle::new(&root);
+    // the tests are code too: a change inside a test module compiles at transform time
+    oracle.tests = true;
     let scratch_root: PathBuf;
     let _held;
     if opts.no_cargo {
@@ -1002,7 +1506,6 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         _held = Some(dir);
         said.push("cargo not run (--no-cargo)".into());
     } else {
-        _held = None;
         let landed: Vec<String> = if spec.op() == Operation::ChangeDependency {
             change::dependency_changes(&k, &root, &spec).map_err(refused)?.into_iter().map(|c| c.package).collect::<BTreeSet<_>>().into_iter().collect()
         } else {
@@ -1027,8 +1530,22 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
                 break;
             }
         }
-        let ws = oracle.workspace().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
-        scratch_root = oracle.scratch_dir().map(|d| d.join(relative(&ws, &root).unwrap_or_default())).unwrap_or_else(|| root.clone());
+        match oracle.scratch_dir() {
+            Some(d) => {
+                let ws = oracle.workspace().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
+                scratch_root = d.join(relative(&ws, &root).unwrap_or_default());
+                _held = None;
+            }
+            None => {
+                // nothing was checked: the postconditions are still read on a copy the edits are written to, never
+                // on the tree as it is, and the change is not proved
+                let dir = crate::gate::scratch_copy(&root)?;
+                edits.write_to(&root, dir.path())?;
+                scratch_root = dir.path().to_path_buf();
+                _held = Some(dir);
+                said.push("no package was checked: the change is not proved".into());
+            }
+        }
     }
     let after_scan = crate::cargo::builder(&scratch_root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
     let postconditions: Vec<(String, bool)> = planned.facts.iter().map(|f| (f.clone(), holds(&after_scan, &scratch_root, f))).collect();
@@ -1043,7 +1560,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             said.push(format!("postcondition does not hold: {f}"));
         }
     }
-    let proved = checks_ok && posts_ok && (!opts.no_cargo || opts.unproven);
+    let proved = checks_ok && posts_ok && (if opts.no_cargo { opts.unproven } else { !checks.is_empty() });
     let mut files: Vec<FileWrite> = edits
         .files
         .iter()
@@ -1078,6 +1595,9 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         written: false,
         reverts: None,
     };
+    for l in &planned.also {
+        said.push(format!("also: {l}"));
+    }
     for l in &planned.listed {
         said.push(format!("listed, not edited: {l}"));
     }
@@ -1089,14 +1609,6 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             let store = crate::passenger::PassengerStore::open_or_init(&root)?;
             let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
             edits.write()?;
-            for f in edits.files.iter() {
-                if !f.path.exists() {
-                    if let Some(d) = f.path.parent() {
-                        std::fs::create_dir_all(d)?;
-                    }
-                    std::fs::write(&f.path, &f.after)?;
-                }
-            }
             let after = store.checkpoint_tree(&format!("transform {} ({})", spec.name, spec.op().as_str()), None)?;
             record.checkpoint_before = Some(before.id.clone());
             record.checkpoint_after = Some(after.id.clone());

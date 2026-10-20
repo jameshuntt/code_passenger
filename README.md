@@ -229,19 +229,32 @@ match over them is exhaustive: `make_struct`, `make_enum`, `make_impl`,
 `add_attribute`, `add_module`, `add_dependency` (through `dep add`),
 `add_test`, `add_constructor`, `add_trait_impl`, `change_signature`,
 `rename`, `move`, `extract`, `gate`, `anchor`, `replace_body` (the body
-from its opening brace to its closing one, the signature kept) and
+from its opening brace to its closing one, the signature kept),
 `change_dependency` (through toml_edit, every dependency table of every
-manifest naming it, the other keys of an entry kept). custodian_kit says where
+manifest naming it, the other keys of an entry kept), `inline` (each call
+becomes a block binding the parameters to its arguments, then the body; the
+function removed when it is not `pub`) and `wrap` (the spec's pieces first,
+then the body as it was, as the block's value). custodian_kit says where
 each lands and renders the text; this crate finds the exact place with syn
 (the item's span from klepto's line), and cascades where the operation says
 so: every struct literal gets a new field's default, every call a new
 parameter's argument, every resolved use a new name, a moved item a
-re-export where it was. a match without a catch-all is listed, never edited.
+re-export where it was (its import where it lands dropped, the private
+imports it used carried with it). a call is found wherever klepto resolves
+it: a binary's, a method's by its receiver, one inside a macro's tokens (in
+the text, from klepto's place for it). a match without a catch-all is listed,
+never edited. an item an attribute macro rewrites (`#[bitpack]`) is refused
+for `add_field` and `add_constructor`, by the macro's name (`[CUST0040]`).
 
 nothing is written before it is proved. the edits are checked with cargo on a
 scratch copy, over the check matrix of the crate they land in and of every
-crate that depends on it; a fresh klepto scan of the copy must show the facts
-the operation promises. with `--write` the tree is checkpointed in the
+crate that depends on it (a binary's package too), the library and binaries
+and every target as a test (`--lib --bins --tests`, never `--lib` where there
+is none); a fresh klepto scan of the copy must show the facts the operation
+promises. a change no package checked is never proved, and its facts are read
+on a copy the edits were written to, never on the tree as it is. a new file
+in a folder no file has made yet gets its folder. with a job open in the
+project, a run's receipt is the job's (a dry run's too). with `--write` the tree is checkpointed in the
 passenger store before and after, and the record (every file's digest before
 and after, the lines written, the checks, the postconditions) is kept.
 `passenger diff --file F` prints the lines a checkpoint pair changed, the

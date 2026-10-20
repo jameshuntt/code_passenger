@@ -64,7 +64,11 @@ impl EditSet {
     /// Writes every `after` in place.
     pub fn write(&self) -> Result<()> {
         for e in self.all() {
-            if e.before != e.after {
+            // a file a change makes may sit in a folder no file has made yet (`src/<module>/<name>.rs`)
+            if e.before != e.after || !e.path.exists() {
+                if let Some(d) = e.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(d)?;
+                }
                 std::fs::write(&e.path, &e.after)?;
             }
         }
