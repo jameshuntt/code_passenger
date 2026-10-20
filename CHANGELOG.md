@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.7 (2026-10-20)
+
+On custodian_kit 0.3.9. A test run after last night's fleet_ops swaps built every dependent's dependent from an empty
+build in the worktree, for six hours, on battery: the proof's kept build sat in code_passenger's place where nothing
+else could use it. The place is the kit's now, so custodian's test runs use the same copy and build. And James's rule
+for a laptop: no cargo line starts on a dying battery. Nothing is removed from the API: the rustdoc JSON of 0.4.6 and
+0.4.7 is the same, item for item. Every link is pinned to f55f12e; the lines it replaces to dcaae55 (0.4.6).
+
+- **The proof's place is custodian_kit's.** `proof_dir::ProofDir` holds a `custodian_kit::proof_place::ProofPlace`
+  ([proof_dir.rs L64](https://github.com/jameshuntt/code_passenger/blob/f55f12e/src/proof_dir.rs#L64), [proof_place.rs L80](https://github.com/1o-llc/custodian_kit/blob/2899848/src/proof_place.rs#L80)): the same path
+  rule, lock, sync and no-debug-info environment as 0.4.6 kept in proof_dir.rs itself ([proof_dir.rs L88 at 0.4.6](https://github.com/jameshuntt/code_passenger/blob/dcaae55/src/proof_dir.rs#L88)),
+  one copy of them, so the proof and custodian's `test run` share one kept build per workspace. Proof: tests/batch.rs
+  `the_proof_place_is_kept_and_a_sync_writes_only_what_differs`, as it was.
+- **No cargo line on a dying battery.** Under 20% and not charging (`pmset -g batt`), the proof's place is not taken
+  and no cargo line starts: `[CUST0042]`, nothing written ([proof_place.rs L80](https://github.com/1o-llc/custodian_kit/blob/2899848/src/proof_place.rs#L80), the
+  checks code_passenger runs itself, [oracle.rs L166](https://github.com/jameshuntt/code_passenger/blob/f55f12e/src/oracle.rs#L166), and its `cargo locate-project`,
+  [gate.rs L295](https://github.com/jameshuntt/code_passenger/blob/f55f12e/src/gate.rs#L295)). Proof: tests/battery.rs
+  `a_dying_battery_refuses_the_proof_before_any_cargo_line_and_writes_nothing` ([L10](https://github.com/jameshuntt/code_passenger/blob/f55f12e/tests/battery.rs#L10)),
+  the battery given by `CUSTODIAN_BATTERY`.
+
+`cargo test --locked --all-features` passes; `cargo clippy --locked --all-targets --all-features -- -D warnings` is clean.
+
 ## 0.4.6 (2026-10-20)
 
 On custodian_kit 0.3.8: the proof's new shape, and James's rule for a repeated shape. A body swapped in the kit's
