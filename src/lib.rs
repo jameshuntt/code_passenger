@@ -8,6 +8,7 @@ pub mod model;
 pub mod error;
 pub mod plans;
 pub mod passenger;
+pub mod proof_dir;
 pub mod packs;
 pub mod engine;
 pub mod scaffolds;

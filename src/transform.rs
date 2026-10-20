@@ -28,7 +28,7 @@
 use crate::error::{PassengerError, Result};
 use crate::gate::{relative, workspace_root, EditSet, FileEdit};
 use custodian_kit::change::{self, At, ChangeSpec, Landing, Operation};
-use custodian_kit::transform::{Checked, FileWrite, TransformRecord, TRANSFORM_SCHEMA};
+use custodian_kit::transform::{Checked, Expansion, FileWrite, TransformRecord, TRANSFORM_SCHEMA};
 use proc_macro2::LineColumn;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -47,6 +47,8 @@ pub struct Options {
     pub out: Option<PathBuf>,
     /// The preflight receipt it runs on.
     pub preflight: Option<i64>,
+    /// The landed crate's tests run on the proof, compared with the same tests before the change.
+    pub tests: bool,
 }
 
 /// What a transform did.
@@ -549,6 +551,62 @@ fn both(line: u32, column: Option<u32>) -> [(usize, usize); 2] {
 
 /// What planning an operation made: the edits, the source generated, the sites listed and not edited, and what a
 /// fresh scan must show.
+/// A spec that keeps what its function compiles to: a body swapped for toolkit calls whose expansion it already is.
+fn keeps_expansion(spec: &ChangeSpec) -> bool {
+    spec.same_expansion && spec.op() == Operation::ReplaceBody
+}
+
+/// The packages a proof compiles, for the packages a change lands in (custodian_kit's rule).
+fn proof_packages_of(k: &klepto::Klepto, spec: &ChangeSpec, land: &Landing, landed: &[String]) -> Vec<change::ProofPackage> {
+    let mut out: Vec<change::ProofPackage> = Vec::new();
+    for p in landed {
+        let at = Landing { package: p.clone(), ..land.clone() };
+        for pp in change::proof_packages(k, spec, &at) {
+            match out.iter_mut().find(|x| x.package == pp.package) {
+                Some(x) => x.tests |= pp.tests,
+                None => out.push(pp),
+            }
+        }
+    }
+    out
+}
+
+/// What a proof compiles, in one line.
+fn proof_line(packages: &[change::ProofPackage]) -> String {
+    let lands: Vec<&str> = packages.iter().filter(|p| p.tests).map(|p| p.package.as_str()).collect();
+    let direct = packages.iter().filter(|p| p.why == "direct dependent").count();
+    let readers = packages.iter().filter(|p| p.why.starts_with("reads ")).count();
+    format!(
+        "cargo check over {} packages: {} with its tests, {} that depend on it directly{}",
+        packages.len(),
+        lands.join(", "),
+        direct,
+        if readers > 0 { format!(", {readers} that read what it changes") } else { String::new() }
+    )
+}
+
+/// The tests' verdict, in one line.
+fn tests_line(package: &str, c: &crate::proof_dir::Compared) -> String {
+    let mut l = format!("cargo test -p {package} on the copy: exit {:?}; {}", c.exit, c.results.join(" | "));
+    if !c.failing_at_base.is_empty() {
+        l.push_str(&format!("; {} failing the same before the change, not its", c.failing_at_base.len()));
+    }
+    for t in &c.new_failures {
+        l.push_str(&format!("; fails after and passed before: {t}"));
+    }
+    l
+}
+
+/// The tests' side record beside a transform's record.
+pub fn tests_file(record: &Path) -> PathBuf {
+    record.with_file_name(format!("{}.tests.json", record.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()))
+}
+
+/// The expansion's side record beside a transform's record.
+pub fn expansion_file(record: &Path) -> PathBuf {
+    record.with_file_name(format!("{}.expansion.json", record.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()))
+}
+
 struct Planned {
     tree: Tree,
     generated: Vec<String>,
@@ -1523,20 +1581,6 @@ fn drop_imports(text: &mut String, path: &Path, lines: &BTreeSet<usize>, name: &
     Ok(dropped)
 }
 
-/// The packages a check covers: the one it lands in and every one that depends on it.
-fn checked_packages(k: &klepto::Klepto, package: &str) -> Vec<String> {
-    let mut out = BTreeSet::from([package.to_string()]);
-    let mut work = vec![package.to_string()];
-    while let Some(p) = work.pop() {
-        for (dependent, deps) in &k.package_deps {
-            if deps.contains(&p) && out.insert(dependent.clone()) {
-                work.push(dependent.clone());
-            }
-        }
-    }
-    out.into_iter().filter(|p| k.features.contains_key(p)).collect()
-}
-
 /// Whether a fact holds in a scan.
 fn holds(k: &klepto::Klepto, root: &Path, fact: &str) -> bool {
     let w: Vec<&str> = fact.splitn(3, ' ').collect();
@@ -1629,11 +1673,13 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     if edits.is_empty() {
         return Err(refused(format!("{}: nothing to write", spec.name)));
     }
-    // the proof: cargo over the check matrix of the crate and its dependents, on a scratch copy; then a fresh scan
+    // the proof: cargo over the check matrix of the crate it lands in (its tests too) and each crate that depends on
+    // it directly (custodian_kit's proof_packages), on the workspace's proof place: one copy at a path that does not
+    // change and one build kept between proofs; then a fresh scan
     let mut checks = Vec::new();
-    let mut oracle = crate::oracle::CargoOracle::new(&root);
-    // the tests are code too: a change inside a test module compiles at transform time
-    oracle.tests = true;
+    let mut oracle: crate::oracle::CargoOracle;
+    let mut expansion: Option<Expansion> = None;
+    let mut compared: Option<crate::proof_dir::Compared> = None;
     let scratch_root: PathBuf;
     let _held;
     if opts.no_cargo {
@@ -1648,17 +1694,22 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         } else {
             vec![land.package.clone()]
         };
-        let packages: BTreeSet<String> = landed.iter().flat_map(|p| checked_packages(&k, p)).collect();
-        said.push(format!("cargo check over {} packages (the ones it lands in and every one that depends on them)", packages.len()));
-        for pkg in packages {
-            let Some(model) = k.features.get(&pkg) else { continue };
+        let packages = proof_packages_of(&k, &spec, &land, &landed);
+        said.push(proof_line(&packages));
+        let proof = crate::proof_dir::ProofDir::take(&root)?;
+        // a swap that keeps what the function compiles to: its expansion before, on the copy as the tree is
+        let before = if keeps_expansion(&spec) { Some(proof.expand_fns(&land.package, std::slice::from_ref(&spec.target))?) } else { None };
+        oracle = crate::oracle::CargoOracle::with_proof(&root, proof);
+        oracle.tests = true;
+        for pp in &packages {
+            let Some(model) = k.features.get(&pp.package) else { continue };
             // the configurations are the edited manifest's: a feature declared, a dependency made optional or
             // required again, as the change leaves them
-            let desired = change::model_after(&k, &root, &spec, &pkg).unwrap_or_else(|| model.clone());
+            let desired = change::model_after(&k, &root, &spec, &pp.package).unwrap_or_else(|| model.clone());
             for job in klepto::check_matrix(&desired) {
-                let r = oracle.check_edits(&job, &edits);
+                let r = oracle.check_edits_tests(&job, &edits, pp.tests);
                 let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
-                checks.push(Checked { package: pkg.clone(), features: job.features.clone(), no_default: job.no_default, ok: r.ok, error });
+                checks.push(Checked { package: pp.package.clone(), features: job.features.clone(), no_default: job.no_default, ok: r.ok, error });
                 if !r.ok {
                     break;
                 }
@@ -1666,6 +1717,26 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             if checks.iter().any(|c| !c.ok) {
                 break;
             }
+        }
+        let compiled = !checks.is_empty() && checks.iter().all(|c| c.ok);
+        if let (Some((before, line, ms)), true) = (before, compiled) {
+            // the edits are on the copy as the last check left them
+            let proof = oracle.proof().ok_or_else(|| refused("the proof place was let go"))?;
+            let (after, _, ms2) = proof.expand_fns(&land.package, std::slice::from_ref(&spec.target))?;
+            let (b, a) = (before.get(&spec.target).cloned().flatten(), after.get(&spec.target).cloned().flatten());
+            let same = b.is_some() && a == b;
+            said.push(match (&b, &a) {
+                (None, _) | (_, None) => format!("cargo expand: {} is not in the expansion of {}'s library", spec.target, land.package),
+                _ if same => "cargo expand: the function after is the same tokens as before (in the normal form)".into(),
+                _ => "cargo expand: the function after is not the same tokens as before".into(),
+            });
+            expansion = Some(Expansion { function: spec.target.clone(), package: land.package.clone(), before: b.unwrap_or_default(), after: a.unwrap_or_default(), same, line, millis: ms + ms2 });
+        }
+        if opts.tests && compiled && expansion.as_ref().is_none_or(|e| e.same) {
+            let proof = oracle.proof().ok_or_else(|| refused("the proof place was let go"))?;
+            let c = proof.tests_compared(&land.package, &edits)?;
+            said.push(tests_line(&land.package, &c));
+            compared = Some(c);
         }
         match oracle.scratch_dir() {
             Some(d) => {
@@ -1696,7 +1767,13 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
         }
     }
     let after_scan = crate::cargo::builder(&scratch_root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
-    let postconditions: Vec<(String, bool)> = planned.facts.iter().map(|f| (f.clone(), holds(&after_scan, &scratch_root, f))).collect();
+    let mut postconditions: Vec<(String, bool)> = planned.facts.iter().map(|f| (f.clone(), holds(&after_scan, &scratch_root, f))).collect();
+    if keeps_expansion(&spec) && !opts.no_cargo {
+        postconditions.push((format!("expands {} the same", spec.target), expansion.as_ref().is_some_and(|e| e.same)));
+    }
+    if opts.tests && !opts.no_cargo {
+        postconditions.push((format!("tests {} as before", land.package), compared.as_ref().is_some_and(crate::proof_dir::Compared::ok)));
+    }
     let checks_ok = checks.iter().all(|c| c.ok);
     let posts_ok = postconditions.iter().all(|(_, h)| *h);
     said.push(format!("cargo check: {} of {} configurations compile; postconditions: {} of {} hold", checks.iter().filter(|c| c.ok).count(), checks.len(), postconditions.iter().filter(|(_, h)| *h).count(), postconditions.len()));
@@ -1784,8 +1861,461 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             std::fs::create_dir_all(d)?;
         }
         std::fs::write(p, serde_json::to_string_pretty(&record)? + "\n")?;
+        if let Some(e) = &expansion {
+            std::fs::write(expansion_file(p), serde_json::to_string_pretty(e)? + "\n")?;
+        }
+        if let Some(c) = &compared {
+            std::fs::write(tests_file(p), serde_json::to_string_pretty(c)? + "\n")?;
+        }
     }
     Ok(Outcome { root, record, record_file, edits, exit_code, said })
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `transform --batch LIST`: the rule for repeated shapes (James, 2026-10-20). One member of a shape is made alone first,
+// fully proved; the rest of that shape go as one batch: every member planned over one scan, the edits placed together,
+// one cargo check over the check matrix, one scan of the copy for every member's postconditions, one checkpoint before
+// and after, and one record per member (each file's digest before and after that member, so each is reverted alone).
+// A member whose edit overlaps another's, whose code does not compile, or whose postcondition does not hold is
+// excluded and named; the rest land.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// What `transform --batch` was asked.
+#[derive(Debug, Clone, Default)]
+pub struct BatchOptions {
+    /// The members' change specs.
+    pub specs: Vec<PathBuf>,
+    pub write: bool,
+    /// The folder each member's record goes into (`<spec name>.json`); else the project's transforms folder.
+    pub out_dir: Option<PathBuf>,
+    /// The preflight receipt each member runs on, by spec name.
+    pub preflights: BTreeMap<String, i64>,
+    /// The receipt of the one member of this shape made alone and proved first.
+    pub after_proof: Option<i64>,
+    /// The landed crates' tests run once, compared with the same tests before the batch.
+    pub tests: bool,
+}
+
+/// A member left out of a batch, and why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Excluded {
+    pub spec: String,
+    pub why: String,
+}
+
+/// What a batch did: one record per member written (or proved), the members left out.
+#[derive(Debug)]
+pub struct BatchOutcome {
+    pub root: PathBuf,
+    pub records: Vec<(TransformRecord, Option<PathBuf>)>,
+    pub excluded: Vec<Excluded>,
+    /// The batch's edits together.
+    pub edits: EditSet,
+    /// Each swap's expansion before and after, by its function.
+    pub expansions: BTreeMap<String, Expansion>,
+    /// Each landed crate's tests against the same tests before the batch.
+    pub tests: BTreeMap<String, crate::proof_dir::Compared>,
+    pub said: Vec<String>,
+    pub exit_code: i32,
+}
+
+/// One member: its spec, where it lands, its plan, and the spans it replaces (in the file as it is).
+struct Member {
+    spec: ChangeSpec,
+    spec_path: PathBuf,
+    land: Landing,
+    planned: Planned,
+    spans: Vec<Span>,
+}
+
+/// One replaced span of a file: bytes `start..end` of the text as it is become `text`.
+#[derive(Clone)]
+struct Span {
+    file: PathBuf,
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// The span one edit replaces: the text between the longest common prefix and suffix of before and after.
+fn span_of(file: &Path, before: &str, after: &str) -> Span {
+    let (b, a) = (before.as_bytes(), after.as_bytes());
+    let mut p = 0;
+    while p < b.len() && p < a.len() && b[p] == a[p] {
+        p += 1;
+    }
+    while !(before.is_char_boundary(p) && after.is_char_boundary(p)) {
+        p -= 1;
+    }
+    let mut s = 0;
+    while s < b.len() - p && s < a.len() - p && b[b.len() - 1 - s] == a[a.len() - 1 - s] {
+        s += 1;
+    }
+    while !(before.is_char_boundary(b.len() - s) && after.is_char_boundary(a.len() - s)) {
+        s -= 1;
+    }
+    Span { file: file.to_path_buf(), start: p, end: b.len() - s, text: after[p..a.len() - s].to_string() }
+}
+
+/// Two spans of one file that cannot both be placed: they overlap, or both insert at one place (their order unknown).
+fn overlaps(x: &Span, y: &Span) -> bool {
+    x.file == y.file && (x.start.max(y.start) < x.end.min(y.end) || x.start == y.start)
+}
+
+/// The members placed in order over the texts as they are: each member's file writes (before and after that member)
+/// and, for every member, the lines its spans cover in the text after the whole batch.
+struct Placed {
+    /// path → (text as it is, text after the batch)
+    files: BTreeMap<PathBuf, (String, String)>,
+    /// per member: (path, text before the member, text after it)
+    steps: Vec<Vec<(PathBuf, String, String)>>,
+    /// per member: (path, first line, last line) in the text after the batch
+    lines: Vec<Vec<(PathBuf, u32, u32)>>,
+}
+
+fn place(members: &[Member]) -> Result<Placed> {
+    let mut files: BTreeMap<PathBuf, (String, String)> = BTreeMap::new();
+    for m in members {
+        for s in &m.spans {
+            if !files.contains_key(&s.file) {
+                let t = std::fs::read_to_string(&s.file)?;
+                files.insert(s.file.clone(), (t.clone(), t));
+            }
+        }
+    }
+    // a span's place now: its place in the text as it is, moved by every span placed before it in the file
+    // (start, end, length change) of each span placed; a span starting where `at` is is the one asked about (two
+    // spans starting at one place are never in one batch)
+    let mut placed: BTreeMap<PathBuf, Vec<(usize, usize, isize)>> = BTreeMap::new();
+    let shift = |placed: &BTreeMap<PathBuf, Vec<(usize, usize, isize)>>, file: &Path, at: usize| -> usize {
+        let d: isize = placed.get(file).map(|v| v.iter().filter(|(st, e, _)| *e <= at && *st != at).map(|(_, _, d)| *d).sum()).unwrap_or(0);
+        (at as isize + d) as usize
+    };
+    let mut steps = Vec::new();
+    for m in members {
+        let mut step = Vec::new();
+        for s in &m.spans {
+            let cur = files.get(&s.file).map(|(_, now)| now.clone()).unwrap_or_default();
+            let (a, b) = (shift(&placed, &s.file, s.start), shift(&placed, &s.file, s.end));
+            let next = format!("{}{}{}", &cur[..a], s.text, &cur[b..]);
+            step.push((s.file.clone(), cur, next.clone()));
+            if let Some(f) = files.get_mut(&s.file) {
+                f.1 = next;
+            }
+            placed.entry(s.file.clone()).or_default().push((s.start, s.end, s.text.len() as isize - (s.end - s.start) as isize));
+        }
+        steps.push(step);
+    }
+    // the lines each member's spans cover after the whole batch
+    let mut lines = Vec::new();
+    for m in members {
+        let mut l = Vec::new();
+        for s in &m.spans {
+            let after = &files[&s.file].1;
+            let begin = shift(&placed, &s.file, s.start).min(after.len());
+            let first = after[..begin].matches('\n').count() as u32 + 1;
+            let last = first + s.text.matches('\n').count() as u32;
+            l.push((s.file.clone(), first, last));
+        }
+        lines.push(l);
+    }
+    Ok(Placed { files, steps, lines })
+}
+
+/// The members of a batch planned over one scan: each spec's plan and the spans it replaces; a member that changes a
+/// manifest, cannot be planned, writes nothing, or overlaps a member before it, left out and named.
+fn members_of(k: &klepto::Klepto, root: &Path, specs: &[PathBuf]) -> Result<(Vec<Member>, Vec<Excluded>)> {
+    let mut excluded = Vec::new();
+    let mut members: Vec<Member> = Vec::new();
+    for path in specs {
+        let spec_path = if path.is_absolute() { path.clone() } else { root.join(path) };
+        let spec = ChangeSpec::from_path(&spec_path).map_err(refused)?;
+        // a change to a manifest moves the lock file cargo writes in the proof: one at a time, never in a batch
+        if matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature) {
+            excluded.push(Excluded { spec: spec.name.clone(), why: format!("{} changes a manifest: made alone, never in a batch", spec.op().as_str()) });
+            continue;
+        }
+        let planned_member = change::landing(k, root, &spec).map_err(refused).and_then(|land| plan(k, root, &spec, &land).map(|p| (land, p)));
+        let (land, planned) = match planned_member {
+            Ok(x) => x,
+            Err(e) => {
+                excluded.push(Excluded { spec: spec.name.clone(), why: e.to_string() });
+                continue;
+            }
+        };
+        let spans: Vec<Span> = planned.tree.edits().files.iter().filter(|f| f.before != f.after).map(|f| span_of(&f.path, &f.before, &f.after)).collect();
+        if spans.is_empty() {
+            excluded.push(Excluded { spec: spec.name.clone(), why: "nothing to write".into() });
+            continue;
+        }
+        if let Some(other) = members.iter().find(|m| m.spans.iter().any(|x| spans.iter().any(|y| overlaps(x, y)))) {
+            excluded.push(Excluded { spec: spec.name.clone(), why: format!("its edit overlaps {}'s: made alone, after this batch", other.spec.name) });
+            continue;
+        }
+        members.push(Member { spec, spec_path, land, planned, spans });
+    }
+    Ok((members, excluded))
+}
+
+/// `transform --batch`: the members planned over one scan, placed together, proved once, written once, recorded one
+/// by one.
+pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
+    let root = workspace_root(root)?;
+    if opts.specs.is_empty() {
+        return Err(refused("a batch needs at least one spec"));
+    }
+    let k = crate::cargo::builder(&root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
+    let mut said = Vec::new();
+    let (mut members, mut excluded) = members_of(&k, &root, &opts.specs)?;
+    said.push(format!("batch of {}{}: {} planned over one scan, {} left out", opts.specs.len(), opts.after_proof.map(|s| format!(" after proof #{s}")).unwrap_or_default(), members.len(), excluded.len()));
+
+    // the proof, on the workspace's proof place (one copy, one kept build): each swap's expansion before, as the tree
+    // is; then the members placed together, one cargo check over the check matrix of the packages they land in (their
+    // tests too) and each that depends on one of them directly; a member the errors point into, whose postcondition
+    // does not hold, or whose expansion is not the same, is left out and named, and the rest checked again
+    let proof = crate::proof_dir::ProofDir::take(&root)?;
+    let mut before: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut expand_line = String::new();
+    let mut expand_ms = 0i64;
+    for p in members.iter().filter(|m| keeps_expansion(&m.spec)).map(|m| m.land.package.clone()).collect::<BTreeSet<_>>() {
+        let fns: Vec<String> = members.iter().filter(|m| keeps_expansion(&m.spec) && m.land.package == p).map(|m| m.spec.target.clone()).collect();
+        let (found, line, ms) = proof.expand_fns(&p, &fns)?;
+        before.extend(found);
+        expand_line = line;
+        expand_ms += ms;
+    }
+    let mut oracle = crate::oracle::CargoOracle::with_proof(&root, proof);
+    oracle.tests = true;
+    let mut checks: Vec<Checked> = Vec::new();
+    let mut placed = place(&members)?;
+    let mut after_scan = None;
+    let mut postconditions: Vec<Vec<(String, bool)>> = Vec::new();
+    let mut expansions: BTreeMap<String, Expansion> = BTreeMap::new();
+    let mut packages_line = String::new();
+    for _round in 0..8 {
+        if members.is_empty() {
+            break;
+        }
+        let edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
+        let mut packages: Vec<change::ProofPackage> = Vec::new();
+        for m in &members {
+            for pp in proof_packages_of(&k, &m.spec, &m.land, std::slice::from_ref(&m.land.package)) {
+                match packages.iter_mut().find(|x| x.package == pp.package) {
+                    Some(x) => x.tests |= pp.tests,
+                    None => packages.push(pp),
+                }
+            }
+        }
+        packages_line = proof_line(&packages);
+        checks.clear();
+        let mut errors: Vec<klepto::Diagnostic> = Vec::new();
+        'packages: for pp in &packages {
+            let Some(model) = k.features.get(&pp.package) else { continue };
+            let desired = change::model_after(&k, &root, &members[0].spec, &pp.package).unwrap_or_else(|| model.clone());
+            for job in klepto::check_matrix(&desired) {
+                let r = oracle.check_edits_tests(&job, &edits, pp.tests);
+                let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
+                checks.push(Checked { package: pp.package.clone(), features: job.features.clone(), no_default: job.no_default, ok: r.ok, error });
+                if !r.ok {
+                    errors = r.diagnostics.into_iter().filter(|d| d.level == "error").collect();
+                    break 'packages;
+                }
+            }
+        }
+        if !errors.is_empty() {
+            // the members whose lines an error names
+            let mut blamed: BTreeSet<usize> = BTreeSet::new();
+            for d in &errors {
+                let (Some(f), Some(line)) = (&d.file, d.line) else { continue };
+                for (i, spans) in placed.lines.iter().enumerate() {
+                    if spans.iter().any(|(p, a, b)| relative(&root, p).is_ok_and(|r| r == *f || f.ends_with(&r)) && (*a..=*b).contains(&line)) {
+                        blamed.insert(i);
+                    }
+                }
+            }
+            if blamed.is_empty() {
+                said.push(format!("cargo check: an error no member's lines hold: {}", errors[0].message));
+                break;
+            }
+            for i in blamed.iter().rev() {
+                let m = members.remove(*i);
+                let why = errors.iter().find(|d| d.line.is_some_and(|l| placed.lines[*i].iter().any(|(_, a, b)| (*a..=*b).contains(&l)))).map(|d| d.message.clone()).unwrap_or_default();
+                excluded.push(Excluded { spec: m.spec.name.clone(), why: format!("does not compile with the batch: {why}") });
+            }
+            placed = place(&members)?;
+            continue;
+        }
+        // one scan of the copy for every member's postconditions
+        let scratch_root = match oracle.scratch_dir() {
+            Some(d) => d.join(relative(oracle.workspace().unwrap_or(&root), &root).unwrap_or_default()),
+            None => {
+                said.push("no package was checked: the batch is not proved".into());
+                break;
+            }
+        };
+        let scan = crate::cargo::builder(&scratch_root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
+        postconditions = members.iter().map(|m| m.planned.facts.iter().map(|f| (f.clone(), holds(&scan, &scratch_root, f))).collect()).collect();
+        // one expansion per crate after, each swap's function compared with its own before
+        expansions.clear();
+        let proof = oracle.proof().ok_or_else(|| refused("the proof place was let go"))?;
+        for p in members.iter().filter(|m| keeps_expansion(&m.spec)).map(|m| m.land.package.clone()).collect::<BTreeSet<_>>() {
+            let fns: Vec<String> = members.iter().filter(|m| keeps_expansion(&m.spec) && m.land.package == p).map(|m| m.spec.target.clone()).collect();
+            let (after, _, ms) = proof.expand_fns(&p, &fns)?;
+            expand_ms += ms;
+            for f in fns {
+                let (b, a) = (before.get(&f).cloned().flatten(), after.get(&f).cloned().flatten());
+                let same = b.is_some() && a == b;
+                expansions.insert(f.clone(), Expansion { function: f, package: p.clone(), before: b.unwrap_or_default(), after: a.unwrap_or_default(), same, line: expand_line.clone(), millis: expand_ms });
+            }
+        }
+        for (i, m) in members.iter().enumerate() {
+            if keeps_expansion(&m.spec) {
+                postconditions[i].push((format!("expands {} the same", m.spec.target), expansions.get(&m.spec.target).is_some_and(|e| e.same)));
+            }
+        }
+        let failing: Vec<usize> = postconditions.iter().enumerate().filter(|(_, p)| p.iter().any(|(_, h)| !h)).map(|(i, _)| i).collect();
+        if failing.is_empty() {
+            after_scan = Some(scan);
+            break;
+        }
+        for i in failing.iter().rev() {
+            let m = members.remove(*i);
+            let f = postconditions[*i].iter().find(|(_, h)| !h).map(|(f, _)| f.clone()).unwrap_or_default();
+            excluded.push(Excluded { spec: m.spec.name.clone(), why: format!("the postcondition {f} does not hold") });
+        }
+        placed = place(&members)?;
+    }
+    said.push(packages_line);
+    // the landed crates' tests, once each, against the same tests before the batch
+    let mut tests_ok = true;
+    let mut compared: BTreeMap<String, crate::proof_dir::Compared> = BTreeMap::new();
+    if opts.tests && after_scan.is_some() {
+        let edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
+        let proof = oracle.proof().ok_or_else(|| refused("the proof place was let go"))?;
+        for p in members.iter().map(|m| m.land.package.clone()).collect::<BTreeSet<_>>() {
+            let c = proof.tests_compared(&p, &edits)?;
+            said.push(tests_line(&p, &c));
+            tests_ok &= c.ok();
+            compared.insert(p, c);
+        }
+        for (i, m) in members.iter().enumerate() {
+            if let Some(post) = postconditions.get_mut(i) {
+                post.push((format!("tests {} as before", m.land.package), compared.get(&m.land.package).is_some_and(crate::proof_dir::Compared::ok)));
+            }
+        }
+    }
+    if !expansions.is_empty() {
+        said.push(format!("cargo expand: {} of {} swaps the same tokens before and after (in the normal form)", expansions.values().filter(|e| e.same).count(), expansions.len()));
+    }
+    let proved = after_scan.is_some() && tests_ok && !members.is_empty() && !checks.is_empty() && checks.iter().all(|c| c.ok);
+    said.push(format!(
+        "cargo check: {} of {} configurations compile with the batch's {} members together{}",
+        checks.iter().filter(|c| c.ok).count(),
+        checks.len(),
+        members.len(),
+        if proved { "; every member's postconditions hold" } else { "" }
+    ));
+    for e in &excluded {
+        said.push(format!("left out: {} — {}", e.spec, e.why));
+    }
+    let edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
+    let code_digest = custodian_kit::code_digest(&root, &custodian_kit::reading::spec::Scope { tests: true, ..Default::default() }.scan_options()).ok();
+    let mut records: Vec<TransformRecord> = members
+        .iter()
+        .zip(placed.steps.iter())
+        .enumerate()
+        .map(|(i, (m, step))| TransformRecord {
+            schema: TRANSFORM_SCHEMA.into(),
+            spec_name: m.spec.name.clone(),
+            spec: relative(&root, &m.spec_path).map(|r| r.display().to_string()).unwrap_or_else(|_| m.spec_path.display().to_string()),
+            spec_digest: m.spec.digest(),
+            operation: m.spec.op().as_str().into(),
+            target: m.spec.target.clone(),
+            preflight_seq: opts.preflights.get(&m.spec.name).copied(),
+            code_digest: code_digest.clone(),
+            files: step
+                .iter()
+                .map(|(p, b, a)| FileWrite { path: relative(&root, p).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(), before: hex(b.as_bytes()), after: hex(a.as_bytes()), lines: written_lines(b, a) })
+                .collect(),
+            checkpoint_before: None,
+            checkpoint_after: None,
+            checks: checks.clone(),
+            postconditions: postconditions.get(i).cloned().unwrap_or_default(),
+            listed: m.planned.listed.clone(),
+            generated: m.planned.generated.clone(),
+            written: false,
+            reverts: None,
+        })
+        .collect();
+    let mut exit_code = if proved { 0 } else { 1 };
+    if opts.write {
+        if !proved {
+            said.push("nothing written: the batch is not proved".into());
+            exit_code = 1;
+        } else {
+            let store = crate::passenger::PassengerStore::open_or_init(&root)?;
+            let before = store.checkpoint_tree(&format!("before a batch of {}", members.len()), None)?;
+            // each member's texts kept, so a member's record reverts alone
+            for step in &placed.steps {
+                for (_, b, a) in step {
+                    store.keep(b.as_bytes())?;
+                    store.keep(a.as_bytes())?;
+                }
+            }
+            edits.write()?;
+            let after = store.checkpoint_tree(&format!("a batch of {}{}", members.len(), opts.after_proof.map(|s| format!(" after proof #{s}")).unwrap_or_default()), None)?;
+            for r in &mut records {
+                r.checkpoint_before = Some(before.id.clone());
+                r.checkpoint_after = Some(after.id.clone());
+                r.written = true;
+            }
+            said.push(format!("written: {} members in {} files; passenger {} → {}", records.len(), placed.files.len(), before.id, after.id));
+        }
+    } else if proved {
+        said.push(format!("proved on a scratch copy, not written (--write writes): {} members in {} files", records.len(), placed.files.len()));
+    } else {
+        said.push("not proved: nothing written".into());
+    }
+    let mut out = Vec::new();
+    for r in records {
+        let file = if r.written || opts.out_dir.is_some() {
+            match &opts.out_dir {
+                Some(d) => Some(d.join(format!("{}.json", r.spec_name))),
+                None => custodian_kit::store::Store::find(&root).and_then(|s| s.path(&custodian_kit::store::named::TRANSFORM, &[("name", &r.spec_name), ("stamp", &custodian_kit::runs::stamp())]).ok()),
+            }
+        } else {
+            None
+        };
+        if let Some(p) = &file {
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(p, serde_json::to_string_pretty(&r)? + "\n")?;
+            if let Some(e) = expansions.get(&r.target) {
+                std::fs::write(expansion_file(p), serde_json::to_string_pretty(e)? + "\n")?;
+            }
+            if let Some(c) = members.iter().find(|m| m.spec.name == r.spec_name).and_then(|m| compared.get(&m.land.package)) {
+                std::fs::write(tests_file(p), serde_json::to_string_pretty(c)? + "\n")?;
+            }
+        }
+        out.push((r, file));
+    }
+    Ok(BatchOutcome { root, records: out, excluded, edits, expansions, tests: compared, said, exit_code })
+}
+
+/// What `transform --batch` prints: what it did, the members left out, the diff, each member's record.
+pub fn render_batch(o: &BatchOutcome) -> String {
+    let mut s = String::new();
+    for l in &o.said {
+        s.push_str(&format!("{l}\n"));
+    }
+    s.push_str(&o.edits.diff_from(&o.root));
+    for (r, f) in &o.records {
+        if let Some(f) = f {
+            s.push_str(&format!("record: {} {}\n", r.spec_name, f.display()));
+        }
+    }
+    s
 }
 
 /// The line a transform without `--write` ends with: proved on a scratch copy and not written, or not proved and
@@ -1820,11 +2350,17 @@ pub fn revert(root: &Path, record_file: &Path) -> Result<Outcome> {
     for f in &rec.files {
         let p = root.join(&f.path);
         let now = std::fs::read(&p).ok();
-        if now.as_deref().map(hex) != Some(f.after.clone()) {
-            return Err(PassengerError::Dirty { detail: format!("{} changed since the transform wrote it", f.path) });
-        }
-        let back = if f.before == "none" { None } else { Some(String::from_utf8(store.object(&f.before)?).map_err(refused)?) };
-        let now_text = String::from_utf8(now.unwrap_or_default()).unwrap_or_default();
+        let now_text = String::from_utf8(now.clone().unwrap_or_default()).unwrap_or_default();
+        let back = if now.as_deref().map(hex) == Some(f.after.clone()) {
+            if f.before == "none" { None } else { Some(String::from_utf8(store.object(&f.before)?).map_err(refused)?) }
+        } else {
+            // the file moved since (the members of a batch after this one): this change alone taken out, when its
+            // text is still in the file once, as it wrote it
+            let dirty = || PassengerError::Dirty { detail: format!("{} changed since the transform wrote it, and its change is not found in it once as written", f.path) };
+            let (Ok(b), Ok(a)) = (store.object(&f.before), store.object(&f.after)) else { return Err(dirty()) };
+            let (b, a) = (String::from_utf8(b).map_err(refused)?, String::from_utf8(a).map_err(refused)?);
+            Some(take_out(&now_text, &b, &a).ok_or_else(dirty)?)
+        };
         files.push(FileWrite { path: f.path.clone(), before: f.after.clone(), after: back.as_deref().map(|b| hex(b.as_bytes())).unwrap_or_else(|| "none".into()), lines: back.as_deref().map(|b| written_lines(&now_text, b)).unwrap_or_default() });
         match back {
             Some(b) => edits.files.push(FileEdit { path: p, before: now_text, after: b }),
@@ -1841,6 +2377,30 @@ pub fn revert(root: &Path, record_file: &Path) -> Result<Outcome> {
     std::fs::write(&file, serde_json::to_string_pretty(&out)? + "\n")?;
     let said = vec![format!("reverted {}: {} files back as they were; passenger {} → {}", rec.spec_name, out.files.len(), before.id, after.id)];
     Ok(Outcome { root, record: out, record_file: Some(file), edits, exit_code: 0, said })
+}
+
+/// `now` with one change taken out: the span `after` wrote over `before` (their common prefix and suffix aside) found
+/// in `now` exactly once with the text before it as `after` has it, and put back as `before` had it.
+fn take_out(now: &str, before: &str, after: &str) -> Option<String> {
+    let sp = span_of(Path::new(""), before, after);
+    let a_end = after.len() - (before.len() - sp.end);
+    let written = &after[sp.start..a_end];
+    let was = &before[sp.start..sp.end];
+    // the text before the span, as far back as needed to make it one place
+    for ctx in [80usize, 400, 2000, usize::MAX] {
+        let from = sp.start.saturating_sub(ctx);
+        let from = (0..=from).rev().find(|i| after.is_char_boundary(*i)).unwrap_or(0);
+        let needle = format!("{}{}", &after[from..sp.start], written);
+        let at: Vec<usize> = now.match_indices(&needle).map(|(i, _)| i).collect();
+        if at.len() == 1 {
+            let i = at[0] + (sp.start - from);
+            return Some(format!("{}{}{}", &now[..i], was, &now[i + written.len()..]));
+        }
+        if at.is_empty() {
+            return None;
+        }
+    }
+    None
 }
 
 /// What `transform` prints: what it did, the diff, the record.

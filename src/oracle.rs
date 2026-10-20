@@ -1,7 +1,8 @@
 //! The cargo oracle (rules O1–O4 in `GATE_RULES.md`): proves a plan with
 //! real `cargo check` on a scratch copy. The real tree is never written.
 
-use crate::gate::{apply_with, relative, scratch_copy, workspace_root, EditSet};
+use crate::gate::{apply_with, relative, workspace_root, EditSet};
+use crate::proof_dir::ProofDir;
 use klepto::{parse_cargo_json, CheckJob, Diagnostic, GatePlan, Oracle, OracleResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -11,7 +12,8 @@ pub struct CargoOracle {
     root: PathBuf,
     /// The workspace `root` belongs to (rule O1); the scratch copy is of this.
     workspace: Option<PathBuf>,
-    scratch: Option<tempfile::TempDir>,
+    /// The workspace's proof place (its copy and its kept build), held from the first check.
+    proof: Option<ProofDir>,
     /// Files written into the scratch copy by the previous check, relative
     /// to the workspace root (rule O1).
     touched: BTreeSet<PathBuf>,
@@ -33,7 +35,7 @@ fn internal(message: String) -> OracleResult {
 
 impl CargoOracle {
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf(), workspace: None, scratch: None, touched: BTreeSet::new(), manifests: None, offline: true, tests: false, libs: None }
+        Self { root: root.to_path_buf(), workspace: None, proof: None, touched: BTreeSet::new(), manifests: None, offline: true, tests: false, libs: None }
     }
 
     /// The workspace the scratch copy mirrors, once a check has run.
@@ -46,7 +48,17 @@ impl CargoOracle {
     }
 
     pub fn scratch_dir(&self) -> Option<&Path> {
-        self.scratch.as_ref().map(|d| d.path())
+        self.proof.as_ref().map(|d| d.root())
+    }
+
+    /// The proof place, once a check has taken it.
+    pub fn proof(&self) -> Option<&ProofDir> {
+        self.proof.as_ref()
+    }
+
+    /// The proof place given back (its lock let go), for a proof that runs more lines on it after the checks.
+    pub fn into_proof(self) -> Option<ProofDir> {
+        self.proof
     }
 
     pub fn touched(&self) -> &BTreeSet<PathBuf> {
@@ -83,10 +95,10 @@ impl CargoOracle {
             self.workspace = Some(workspace_root(&self.root).map_err(|e| e.to_string())?);
         }
         let ws = self.workspace.clone().ok_or("no workspace root")?;
-        if self.scratch.is_none() {
-            self.scratch = Some(scratch_copy(&ws).map_err(|e| e.to_string())?);
+        if self.proof.is_none() {
+            self.proof = Some(ProofDir::take(&ws).map_err(|e| e.to_string())?);
         }
-        let scratch = self.scratch.as_ref().map(|d| d.path().to_path_buf()).ok_or("no scratch dir")?;
+        let scratch = self.proof.as_ref().map(|d| d.root().to_path_buf()).ok_or("no proof place")?;
         for rel in std::mem::take(&mut self.touched) {
             let src = ws.join(&rel);
             let dst = scratch.join(&rel);
@@ -109,17 +121,36 @@ impl CargoOracle {
     /// Rules O2–O3 for a whole workspace's edits at once: every package's
     /// gates and manifest edits written into the scratch copy, then `job`.
     pub fn check_edits(&mut self, job: &CheckJob, edits: &EditSet) -> OracleResult {
+        let tests = self.tests;
+        self.check_edits_tests(job, edits, tests)
+    }
+
+    /// One check of the matrix with the edits written, its tests compiled or not (a transform compiles the tests of
+    /// the crate it lands in only).
+    pub fn check_edits_tests(&mut self, job: &CheckJob, edits: &EditSet, tests: bool) -> OracleResult {
         match self.prepare_edits(edits) {
-            Ok(cwd) => self.run(job, &cwd),
+            Ok(cwd) => self.run_tests(job, &cwd, tests),
             Err(e) => internal(format!("oracle setup failed: {e}")),
         }
     }
 
+    /// The oracle on a proof place already held (a proof that ran a line on the copy before its checks).
+    pub fn with_proof(root: &Path, proof: ProofDir) -> Self {
+        let mut o = Self::new(root);
+        o.proof = Some(proof);
+        o
+    }
+
     fn run(&mut self, job: &CheckJob, cwd: &Path) -> OracleResult {
-        let target_dir = self.scratch.as_ref().map(|d| d.path().join("target")).unwrap_or_else(|| cwd.join("target"));
+        let tests = self.tests;
+        self.run_tests(job, cwd, tests)
+    }
+
+    fn run_tests(&mut self, job: &CheckJob, cwd: &Path, tests: bool) -> OracleResult {
+        let target_dir = self.proof.as_ref().map(|d| d.target().to_path_buf()).unwrap_or_else(|| cwd.join("target"));
         let cwd = cwd.to_path_buf();
         // the declared line (`crate::lines::Cargo`), run by the cargo that runs us
-        let line = if self.tests {
+        let line = if tests {
             if let Err(e) = self.read_packages() {
                 return internal(e);
             }
@@ -136,6 +167,9 @@ impl CargoOracle {
         cmd.args(xccute_contract::CompositeShellCommand::argv(&line));
         cmd.current_dir(&cwd);
         cmd.env("CARGO_TARGET_DIR", target_dir);
+        if self.proof.is_some() {
+            cmd.envs(crate::proof_dir::PROOF_ENV.iter().copied());
+        }
         let output = match cmd.output() {
             Ok(o) => o,
             Err(e) => return internal(format!("could not run cargo: {e}")),

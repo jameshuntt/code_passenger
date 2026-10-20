@@ -432,6 +432,14 @@ impl PassengerStore {
         self.read_object(hash)
     }
 
+    /// Keeps a blob no checkpoint holds (a file's text between two members of a batch) and returns its digest, so a
+    /// member's record can be reverted alone.
+    pub fn keep(&self, bytes: &[u8]) -> Result<String> {
+        let hash = sha256_hex(bytes);
+        self.write_object_if_missing(&hash, bytes)?;
+        Ok(hash)
+    }
+
     fn read_object(&self, hash: &str) -> Result<Vec<u8>> {
         let compressed = fs::read(self.object_path(hash)?)?;
         Ok(zstd::decode_all(&compressed[..])?)

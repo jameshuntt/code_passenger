@@ -485,6 +485,13 @@ pub struct Attr {
 /// `transform --spec S [--root R] [--write] [--no-cargo] [--unproven] [--out FILE] [--preflight N] [--revert RECORD]`:
 /// one change spec, proved by cargo on a scratch copy and a fresh scan, written with `--write` (passenger checkpoints
 /// before and after, a record of every file), or a record's files put back (`--revert`).
+///
+/// `transform --batch LIST [--toolkit] [--after-proof N] [--out DIR] [--write]`: the rule for a repeated shape. LIST
+/// names one member a line (a spec file, its preflight receipt after it; with `--toolkit` a function's path may stand
+/// for its spec); they are planned over one scan, placed together, proved by one cargo check over the check matrix and
+/// one scan, written once, and recorded one by one (each member's record in DIR, reverted alone). A member that cannot
+/// go with the rest is left out and named. `--toolkit` proves the members as `to-toolkit` does first: one `cargo
+/// expand` per crate before and after compared function by function, the crate's tests against the base.
 #[allow(clippy::duplicated_attributes)]
 #[derive(SimpleSubCommand, Debug, Clone, Default)]
 #[subcommand(segment = "transform")]
@@ -513,6 +520,20 @@ pub struct Transform {
     #[builder(into)]
     #[arg(kv = "--preflight")]
     pub preflight: Option<OsString>,
+    /// A batch: a file naming one member a line.
+    #[builder(into)]
+    #[arg(kv = "--batch")]
+    pub batch: Option<OsString>,
+    /// The batch's members are simple_impl toolkit swaps, each found again by the matcher before it goes.
+    #[arg(flag = "--toolkit")]
+    pub toolkit: bool,
+    /// The landed crate's tests run on the proof, compared with the same tests before the change.
+    #[arg(flag = "--tests")]
+    pub tests: bool,
+    /// The receipt of the one member of the batch's shape made alone and proved first.
+    #[builder(into)]
+    #[arg(kv = "--after-proof")]
+    pub after_proof: Option<OsString>,
     /// A record whose files are put back.
     #[builder(into)]
     #[arg(kv = "--revert")]
@@ -544,10 +565,11 @@ pub struct ToToolkit {
 }
 
 fn transform_valid(line: &Transform) -> CommandValidationResult {
-    match (&line.spec, &line.revert) {
-        (Some(_), Some(_)) => Err(CommandValidationError::structural("--spec or --revert, not both").with_field("revert")),
-        (None, None) => Err(CommandValidationError::structural("transform needs --spec or --revert").with_field("spec")),
-        _ => Ok(()),
+    match [line.spec.is_some(), line.revert.is_some(), line.batch.is_some()].iter().filter(|x| **x).count() {
+        0 => Err(CommandValidationError::structural("transform needs --spec, --batch or --revert").with_field("spec")),
+        1 if (line.toolkit || line.after_proof.is_some()) && line.batch.is_none() => Err(CommandValidationError::structural("--toolkit and --after-proof go with --batch").with_field("batch")),
+        1 => Ok(()),
+        _ => Err(CommandValidationError::structural("one of --spec, --batch and --revert").with_field("revert")),
     }
 }
 
@@ -1036,7 +1058,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             Line::Attr(l)
         }
         "transform" => {
-            let w = Words::read(rest, &["--write", "--no-cargo", "--unproven"], &["--root", "--spec", "--out", "--preflight", "--revert"])?;
+            let w = Words::read(rest, &["--write", "--no-cargo", "--unproven", "--toolkit", "--tests"], &["--root", "--spec", "--out", "--preflight", "--revert", "--batch", "--after-proof"])?;
             w.positionals(0, "transform")?;
             let mut l = CodePassenger::transform();
             opt!(l, w, "--root", root);
@@ -1047,6 +1069,10 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             opt!(l, w, "--out", out);
             opt!(l, w, "--preflight", preflight);
             opt!(l, w, "--revert", revert);
+            opt!(l, w, "--batch", batch);
+            flag!(l, w, "--toolkit", toolkit);
+            flag!(l, w, "--tests", tests);
+            opt!(l, w, "--after-proof", after_proof);
             transform_valid(l.leaf()).map_err(|e| PassengerError::Line { detail: e.to_string() })?;
             Line::Transform(l)
         }
@@ -1265,6 +1291,53 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
             outputs.extend(e.edits.files.iter().filter(|f| f.before != f.after).map(|f| f.path.clone()));
             0
         }
+        Line::Transform(l) if l.leaf().batch.is_some() => {
+            let l = l.leaf();
+            if l.no_cargo || l.unproven {
+                return Err(PassengerError::Line { detail: "a batch is always proved: no --no-cargo, no --unproven".into() });
+            }
+            let list = PathBuf::from(os(&l.batch).unwrap_or_default());
+            let text = std::fs::read_to_string(&list).map_err(|e| PassengerError::Io { detail: format!("{}: {e}", list.display()) })?;
+            // one member a line: a spec file or a function's path, then its preflight receipt
+            let mut members = Vec::new();
+            let mut preflight_of = Vec::new();
+            for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                let mut words = line.split_whitespace();
+                let m = words.next().unwrap_or_default().to_string();
+                if let Some(seq) = words.next().and_then(|n| n.trim_start_matches('#').parse::<i64>().ok()) {
+                    preflight_of.push((m.clone(), seq));
+                }
+                members.push(m);
+            }
+            // the preflights by spec name: the spec files' own names
+            let mut preflights = std::collections::BTreeMap::new();
+            for (m, seq) in preflight_of {
+                let p = if Path::new(&m).is_absolute() { PathBuf::from(&m) } else { root.join(&m) };
+                if let Ok(s) = custodian_kit::change::ChangeSpec::from_path(&p) {
+                    preflights.insert(s.name, seq);
+                }
+            }
+            let after_proof = os(&l.after_proof).and_then(|p| p.trim_start_matches('#').parse().ok());
+            let out_dir = os(&l.out).map(PathBuf::from);
+            if l.toolkit {
+                let o = crate::to_toolkit::run_batch(&root, &crate::to_toolkit::BatchOptions { members, write: l.write, out: out_dir, preflights, after_proof })?;
+                out.push_str(&crate::to_toolkit::render_batch(&o));
+                if let Some(t) = &o.transform {
+                    if o.record.written {
+                        outputs.extend(t.records.iter().flat_map(|(r, _)| r.files.iter().map(|f| t.root.join(&f.path))));
+                    }
+                    outputs.extend(t.records.iter().filter_map(|(_, f)| f.clone()));
+                }
+                outputs.extend(o.record_file.clone());
+                o.exit_code
+            } else {
+                let o = crate::transform::run_batch(&root, &crate::transform::BatchOptions { specs: members.iter().map(PathBuf::from).collect(), write: l.write, out_dir, preflights, after_proof, tests: l.tests })?;
+                out.push_str(&crate::transform::render_batch(&o));
+                outputs.extend(o.records.iter().filter(|(r, _)| r.written).flat_map(|(r, _)| r.files.iter().map(|f| o.root.join(&f.path))));
+                outputs.extend(o.records.iter().filter_map(|(_, f)| f.clone()));
+                o.exit_code
+            }
+        }
         Line::Transform(l) => {
             let l = l.leaf();
             let o = match os(&l.revert) {
@@ -1280,6 +1353,7 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
                         unproven: l.unproven,
                         out: os(&l.out).map(PathBuf::from),
                         preflight: os(&l.preflight).and_then(|p| p.parse().ok()),
+                        tests: l.tests,
                     };
                     crate::transform::run(&root, &opts)?
                 }
