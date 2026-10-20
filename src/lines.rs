@@ -48,6 +48,7 @@ pub const JOB_ENV: &str = "CODE_PASSENGER_JOB";
 #[composite(command = "dep", ty = Dep, init = "action,krate,dep")]
 #[composite(command = "attr", ty = Attr, init = "action,file,item,line")]
 #[composite(command = "transform", ty = Transform)]
+#[composite(command = "to-toolkit", method = "to_toolkit", ty = ToToolkit, init = "function")]
 pub struct CodePassenger;
 
 /// `code-passenger --root ROOT WORD...`: a line whose root comes first, as
@@ -518,6 +519,30 @@ pub struct Transform {
     pub revert: Option<OsString>,
 }
 
+/// `to-toolkit --function F [--root R] [--write] [--out DIR]`: one function's body swapped for the simple_impl
+/// toolkit calls whose expansion it already is; proved on a scratch copy (cargo expand before and after the same,
+/// the crate's tests passing), written with `--write` through `transform`.
+#[allow(clippy::duplicated_attributes)]
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "to-toolkit")]
+#[exit_status(code = 0, word = "proved, and written with --write")]
+#[exit_status(code = 1, word = "not proved: nothing written")]
+#[exit_status(code = 2, word = "refused")]
+pub struct ToToolkit {
+    #[builder(init_required, into)]
+    #[arg(kv = "--function")]
+    pub function: OsString,
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+    #[arg(flag = "--write")]
+    pub write: bool,
+    /// Where the specs and the record go.
+    #[builder(into)]
+    #[arg(kv = "--out")]
+    pub out: Option<OsString>,
+}
+
 fn transform_valid(line: &Transform) -> CommandValidationResult {
     match (&line.spec, &line.revert) {
         (Some(_), Some(_)) => Err(CommandValidationError::structural("--spec or --revert, not both").with_field("revert")),
@@ -619,6 +644,7 @@ leaves! {
     Dep => DepRooted,
     Attr => AttrRooted,
     Transform => TransformRooted,
+    ToToolkit => ToToolkitRooted,
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +720,7 @@ pub enum Line {
     Dep(DepRooted<CodePassenger>),
     Attr(AttrRooted<CodePassenger>),
     Transform(TransformRooted<CodePassenger>),
+    ToToolkit(ToToolkitRooted<CodePassenger>),
 }
 
 macro_rules! each_line {
@@ -716,6 +743,7 @@ macro_rules! each_line {
             Line::Dep($l) => $body,
             Line::Attr($l) => $body,
             Line::Transform($l) => $body,
+            Line::ToToolkit($l) => $body,
         }
     };
 }
@@ -740,6 +768,7 @@ impl Line {
             Line::Dep(_) => "dep",
             Line::Attr(_) => "attr",
             Line::Transform(_) => "transform",
+            Line::ToToolkit(_) => "to-toolkit",
         }
     }
 
@@ -780,6 +809,7 @@ impl Line {
             Line::Dep(l) => Line::Dep(l.root(root)),
             Line::Attr(l) => Line::Attr(l.root(root)),
             Line::Transform(l) => Line::Transform(l.root(root)),
+            Line::ToToolkit(l) => Line::ToToolkit(l.root(root)),
         }
     }
 }
@@ -815,7 +845,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
         at.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
         return Ok(line.with_root(root));
     }
-    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform".into() })?;
+    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform, to-toolkit".into() })?;
     let line = match *cmd {
         "scan" => {
             let w = Words::read(rest, &["--json"], &["--root", "--src"])?;
@@ -1020,6 +1050,16 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             transform_valid(l.leaf()).map_err(|e| PassengerError::Line { detail: e.to_string() })?;
             Line::Transform(l)
         }
+        "to-toolkit" => {
+            let w = Words::read(rest, &["--write"], &["--root", "--function", "--out"])?;
+            w.positionals(0, "to-toolkit")?;
+            let function = w.kv("--function").ok_or_else(|| PassengerError::Line { detail: "to-toolkit needs --function".into() })?;
+            let mut l = CodePassenger::to_toolkit(function);
+            opt!(l, w, "--root", root);
+            flag!(l, w, "--write", write);
+            opt!(l, w, "--out", out);
+            Line::ToToolkit(l)
+        }
         other => return Err(PassengerError::Line { detail: format!("`{other}` is not a command") }),
     };
     line.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
@@ -1028,6 +1068,10 @@ pub fn read(args: &[OsString]) -> Result<Line> {
 
 // ---------------------------------------------------------------------------
 // running a line
+
+fn o_root(root: &Path, rel: &str) -> PathBuf {
+    root.join(rel)
+}
 
 /// A line run: its exit status, the word its line names for it, what it printed, its receipt.
 #[derive(Debug, Clone)]
@@ -1243,6 +1287,17 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
             out.push_str(&crate::transform::render(&o));
             if o.record.written {
                 outputs.extend(o.record.files.iter().map(|f| o.root.join(&f.path)));
+            }
+            outputs.extend(o.record_file.clone());
+            o.exit_code
+        }
+        Line::ToToolkit(l) => {
+            let l = l.leaf();
+            let opts = crate::to_toolkit::Options { function: l.function.to_string_lossy().into_owned(), write: l.write, out: os(&l.out).map(PathBuf::from) };
+            let o = crate::to_toolkit::run(&root, &opts)?;
+            out.push_str(&crate::to_toolkit::render(&o));
+            if o.record.written {
+                outputs.extend(o.record.transforms.iter().flat_map(|t| t.files.iter().map(|f| o_root(&root, &f.path))));
             }
             outputs.extend(o.record_file.clone());
             o.exit_code

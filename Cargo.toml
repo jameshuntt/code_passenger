@@ -62,6 +62,8 @@ stable_digest = "0.1.1"
 # spec's fields
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# to-toolkit: a function found in cargo expand's output, compared in custodian_kit's normal form
+quote = "1"
 file_recipe = "0.1.1"
 # the plan flags as one word, its rules checked
 big-bad-bool = "0.1.1"

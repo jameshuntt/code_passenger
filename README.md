@@ -264,6 +264,32 @@ exit 2.
 ###
 ---
 
+### to-toolkit: a function's body as the toolkit calls it already is
+
+custodian_kit's `patterns` reading lists the functions whose bodies are the
+expansion of a simple_impl toolkit macro (`ensure`, `require_some`,
+`continue_if`, `getter`, ...), exactly or nearly. this line swaps one of them.
+
+```bash
+code-passenger --root . to-toolkit --function shop::Order::total                       # proved on a scratch copy, nothing written
+code-passenger --root . to-toolkit --function shop::Order::total --write --out records/  # written through transform, the specs and the record kept
+```
+
+the preflight: the body matches exactly (a near match is refused with its
+difference named, `[CP0070]`), and the crate depends on simple_impl, or the
+first step is an `add_dependency` spec that makes it so. each step is a change
+spec `transform` makes (`replace_body`: the matched statements become the
+calls, the rest of the body stays as written; a whole-method generator such as
+`getter!` takes the function's docs and attributes inside the call). the proof,
+on a scratch copy before anything is written: `cargo expand` of the function
+before and after is the same in custodian_kit's proof form (its locals named by
+where they are bound, since a macro's own names are hygienic, then the normal
+form), and `cargo test -p <crate>` passes. with `--write` each step is made by
+`transform`, proved again by cargo over the check matrix and recorded.
+
+###
+---
+
 ### every command is a declared line
 
 every command is declared once as an xccute line (simple_impl_derive), read
