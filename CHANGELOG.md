@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.4 (2026-10-20)
+
+The writer for what custodian_kit 0.3.6 adds after the pantry: features written to a manifest, a dependency made
+optional, a library beside a binary, a signature and its body in one step, a test module made where one is asked
+for. Also the `to-toolkit` line from the `patterns` branch. Nothing is removed from the API: the rustdoc JSON of
+0.4.3 and 0.4.4 differ by 90 additions and no removal. Every link is pinned to e852921.
+
+- **One place for a manifest's features and `optional`.** `edit::set_optional_in`, `edit::set_feature_in` and
+  `edit::feature_declare_text` ([edit.rs L336](https://github.com/jameshuntt/code_passenger/blob/e852921/src/commands/edit.rs#L336), [edit.rs L371](https://github.com/jameshuntt/code_passenger/blob/e852921/src/commands/edit.rs#L371),
+  [edit.rs L386](https://github.com/jameshuntt/code_passenger/blob/e852921/src/commands/edit.rs#L386)); the features plan's manifest edits use them too ([gate.rs L269](https://github.com/jameshuntt/code_passenger/blob/e852921/src/gate.rs#L269)), where
+  0.4.3 had its own ([gate.rs L271 at 0.4.3](https://github.com/jameshuntt/code_passenger/blob/dc8e2db/src/gate.rs#L271)). `edit::dep_change_text_with` takes `optional`, alone (the
+  source kept) or with a new source ([edit.rs L297](https://github.com/jameshuntt/code_passenger/blob/e852921/src/commands/edit.rs#L297)).
+- **Cargo's spacing.** A key added to an inline entry is written as cargo writes it: `features = ["derive"],
+  optional = true`, where 0.4.3 wrote `["derive"] , optional = true` (`edit::tidy_entry`,
+  [edit.rs L100](https://github.com/jameshuntt/code_passenger/blob/e852921/src/commands/edit.rs#L100)).
+- **declare_feature** ([transform.rs L1017](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L1017)): the feature written, and the required dependencies its
+  `dep:` entries name made optional in the same step; the postconditions `feature <crate> <name> <list>` and
+  `optional <crate> <dependency> <bool>` ([transform.rs L1499-L1513](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L1499-L1513)). The check matrix is read from the
+  manifest as the change leaves it ([transform.rs L1532](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L1532)), where 0.4.3 read the model from before the edit
+  ([transform.rs L1520 at 0.4.3](https://github.com/jameshuntt/code_passenger/blob/dc8e2db/src/transform.rs#L1520)).
+- **The lock file with the manifest.** A transform that changes a manifest writes the lock file cargo made in its
+  proof ([transform.rs L1647](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L1647)): the tree's lock names what its manifests name, so a frozen scan reads the
+  new dependency's macros and sees the functions its generators write (the pantry's `can_cook`).
+- **make_lib** ([transform.rs L774](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L774)), **change_signature with a body** ([transform.rs L1046](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L1046)),
+  **add_test makes its module** ([transform.rs L816](https://github.com/jameshuntt/code_passenger/blob/e852921/src/transform.rs#L816), where 0.4.3 refused, [transform.rs L800 at 0.4.3](https://github.com/jameshuntt/code_passenger/blob/dc8e2db/src/transform.rs#L800)).
+- **to-toolkit** (from `patterns`): one function's body swapped for the toolkit calls whose expansion it already
+  is, each step a change spec, proved on a scratch copy by `cargo expand` of the function before and after and the
+  crate's tests; a near match refused with its difference named.
+
+Proof, in [tests/manifest_ops.rs](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs) on `transform_more` and the new fixture `feature_forms` (p depends on a, a on
+c, b optional; a declares `x = ["c/z"]`):
+- `declare_feature_writes_every_cargo_form_and_its_record_covers_the_lines_written` ([L129](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L129)): `g`,
+  `a/x`, `b?/y` and `dep:b` in one feature, the record covering the one line written, every configuration of the
+  new matrix compiled; `a/y` refused with a's features named.
+- `a_feature_named_like_the_dependency_it_turns_on_is_written` ([L47](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L47)),
+  `a_feature_is_declared_and_its_dependency_made_optional_in_one_step` ([L33](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L33)),
+  `optional_on_add_dependency_and_change_dependency` ([L61](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L61)): the lock written, and a frozen
+  `cargo metadata` reads it; `optional_keeps_a_dependencys_features_and_cargos_spacing` ([L149](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L149)),
+  `a_key_added_to_an_inline_entry_keeps_cargos_spacing` ([L80](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L80)).
+- `make_lib_gives_a_binary_only_crate_its_library` ([L90](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L90)),
+  `change_signature_with_a_body_writes_both_in_one_step` ([L103](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L103)),
+  `add_test_makes_the_module_it_is_asked_to_go_in` ([L114](https://github.com/jameshuntt/code_passenger/blob/e852921/tests/manifest_ops.rs#L114)).
+- `cargo test --all-features` and `cargo clippy --all-targets --all-features -- -D warnings` pass.
+
 ## 0.4.3 (2026-10-20)
 
 custodian's exercise ran every operation on copies of three projects and found six faults in `transform`; the first
