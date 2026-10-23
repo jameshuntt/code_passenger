@@ -181,12 +181,42 @@ fn module_then(items: &[syn::Item], segs: &[String]) -> Option<syn::ImplItemFn> 
 
 /// The function `item` of `package` among the items of the crate's expansion (`package::` dropped from its path).
 pub(crate) fn fn_in(items: &[syn::Item], package: &str, item: &str) -> Option<syn::ImplItemFn> {
-    let segs = segments(item);
+    // a route that names its impl (`path[impl From<i64> for Level]`): found in the impl whose header is that one
+    let (path, _) = custodian_kit::route::split(item);
+    let segs = segments(path);
     let segs = match segs.split_first() {
         Some((first, rest)) if first.replace('-', "_") == package.replace('-', "_") => rest.to_vec(),
         _ => segs,
     };
-    find_fn(items, &segs)
+    match custodian_kit::route::named_impl(item) {
+        Some(imp) => in_named_impl(items, &segs, &imp),
+        None => find_fn(items, &segs),
+    }
+}
+
+/// The function `segs` names inside the impl `imp` (its trait as written, generic arguments and all, and its type),
+/// in the module the path leads to.
+fn in_named_impl(items: &[syn::Item], segs: &[String], imp: &(Option<String>, String)) -> Option<syn::ImplItemFn> {
+    let flat = |t: String| t.split_whitespace().collect::<String>();
+    match segs {
+        [_, name] => items.iter().find_map(|i| match i {
+            syn::Item::Impl(x)
+                if flat(x.self_ty.to_token_stream().to_string()) == flat(imp.1.clone())
+                    && x.trait_.as_ref().map(|(_, p, _)| flat(p.to_token_stream().to_string())) == imp.0.clone().map(flat) =>
+            {
+                x.items.iter().find_map(|f| match f {
+                    syn::ImplItem::Fn(f) if f.sig.ident == name => Some(f.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }),
+        [first, rest @ ..] if rest.len() > 1 => items.iter().find_map(|i| match i {
+            syn::Item::Mod(m) if m.ident == first => m.content.as_ref().and_then(|(_, items)| in_named_impl(items, rest, imp)),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 /// The proof a transform kept beside its record: the expansion, the tests against the base.
@@ -208,7 +238,7 @@ fn spec_file(dir: &Path, spec: &ChangeSpec) -> Result<PathBuf> {
 pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     let root = workspace_root(root)?;
     let k = crate::cargo::builder(&root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
-    let f = k.functions.iter().find(|x| x.fq_name == opts.function && x.generated.is_none()).ok_or_else(|| refused(format!("{}: not a function klepto captured in the source", opts.function)))?;
+    let f = custodian_kit::route::find_fn(&k.functions, &opts.function).map_err(|e| refused(e.to_string()))?;
     let (Some(line), Some(column)) = (f.location.line, f.location.column) else { return Err(refused(format!("{}: klepto has no place for it", opts.function))) };
     let text = std::fs::read_to_string(&f.location.path)?;
     let at = matcher::function_at(&text, line, column, &opts.function).ok_or_else(|| refused(format!("{}: no function at {}:{line}", opts.function, f.location.path.display())))?;
@@ -402,9 +432,12 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
         let function = given_spec.as_ref().map(|(s, _)| s.target.clone()).unwrap_or_else(|| entry.clone());
         let name = given_spec.as_ref().map(|(s, _)| s.name.clone()).unwrap_or_else(|| function.clone());
         let mut out = |why: String| excluded.push(transform::Excluded { spec: name.clone(), why });
-        let Some(f) = k.functions.iter().find(|x| x.fq_name == function && x.generated.is_none()) else {
-            out(format!("{function}: not a function klepto captured in the source"));
-            continue;
+        let f = match custodian_kit::route::find_fn(&k.functions, &function) {
+            Ok(f) => f,
+            Err(e) => {
+                out(e.to_string());
+                continue;
+            }
         };
         let (Some(line), Some(column)) = (f.location.line, f.location.column) else {
             out(format!("{function}: klepto has no place for it"));

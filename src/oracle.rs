@@ -180,12 +180,14 @@ impl CargoOracle {
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut diagnostics = parse_cargo_json(&stdout);
-        if !output.status.success() && diagnostics.is_empty() {
+        // a failure cargo gives no compiler message for (a dependency it cannot fetch offline, a manifest it refuses):
+        // its own first error line is the reason
+        if !output.status.success() && !diagnostics.iter().any(|d| d.level == "error") {
             let stderr = String::from_utf8_lossy(&output.stderr);
             diagnostics.push(Diagnostic {
                 code: None,
                 level: "error".into(),
-                message: stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("cargo failed").to_string(),
+                message: first_error_line(&stderr),
                 mention: None,
                 file: None,
                 line: None,
@@ -203,5 +205,34 @@ impl Oracle for CargoOracle {
             Ok(cwd) => self.run(job, &cwd),
             Err(e) => internal(format!("oracle setup failed: {e}")),
         }
+    }
+}
+
+/// Cargo's first error line in its stderr (`error: no matching package named ...`), with the line after it when that
+/// carries the detail; else its last line that says anything; `cargo failed` when it said nothing.
+pub fn first_error_line(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    match lines.iter().position(|l| l.starts_with("error")) {
+        Some(i) => {
+            let l = lines[i];
+            match lines.get(i + 1) {
+                Some(next) if l.ends_with(':') && !next.starts_with("error") => format!("{l} {next}"),
+                _ => l.to_string(),
+            }
+        }
+        None => lines.last().map(|l| l.to_string()).unwrap_or_else(|| "cargo failed".into()),
+    }
+}
+
+#[cfg(test)]
+mod first_error_tests {
+    #[test]
+    fn a_failed_check_with_no_compiler_message_carries_cargos_first_error_line() {
+        // a dependent's check offline, the registry not reachable: cargo's own error, no compiler message
+        let stderr = "    Updating crates.io index\nwarning: spurious network error\nerror: failed to get `simple_impl` as a dependency of package `fleet_ops v0.1.0`\n\nCaused by:\n  attempting to make an HTTP request, but --offline was specified\n";
+        assert_eq!(super::first_error_line(stderr), "error: failed to get `simple_impl` as a dependency of package `fleet_ops v0.1.0`");
+        assert_eq!(super::first_error_line("error: no matching package named `x` found\nlocation searched: registry\n"), "error: no matching package named `x` found");
+        assert_eq!(super::first_error_line("error: failed to select a version for the requirement:\n`simple_impl = \"^0.9\"`\n"), "error: failed to select a version for the requirement: `simple_impl = \"^0.9\"`");
+        assert_eq!(super::first_error_line(""), "cargo failed");
     }
 }

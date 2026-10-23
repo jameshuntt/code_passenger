@@ -622,6 +622,8 @@ fn abs(root: &Path, rel: &str) -> PathBuf {
 }
 
 fn ty_name(id: &str) -> &str {
+    // a route that names its impl (`path[impl From<i64> for Level]`): the path's last segment
+    let id = custodian_kit::route::split(id).0;
     id.rsplit("::").next().unwrap_or(id)
 }
 
@@ -934,7 +936,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
         }
         ReplaceBody => {
             let f = spec.function.as_ref().ok_or_else(|| refused("replace_body needs function"))?;
-            let old = k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            let old = custodian_kit::route::find_fn(&k.functions, &item).map_err(|e| refused(e.to_string()))?;
             if f.name != ty_name(&item) {
                 return Err(refused(format!("{item}: the spec's function is {}, not this one", f.name)));
             }
@@ -977,7 +979,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
             if !blockers.is_empty() {
                 return Err(refused(blockers.join("; ")));
             }
-            let f = k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            let f = custodian_kit::route::find_fn(&k.functions, &item).map_err(|e| refused(e.to_string()))?;
             let name = ty_name(&item).to_string();
             // its parameters and body, as they are written
             let decl = canon(&f.location.path);
@@ -1066,7 +1068,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
         }
         Wrap => {
             let f = spec.function.as_ref().ok_or_else(|| refused("wrap needs function"))?;
-            k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            custodian_kit::route::find_fn(&k.functions, &item).map_err(|e| refused(e.to_string()))?;
             if f.name != ty_name(&item) {
                 return Err(refused(format!("{item}: the spec's function is {}, not this one", f.name)));
             }
@@ -1128,7 +1130,7 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
         }
         ChangeSignature => {
             let f = spec.function.as_ref().ok_or_else(|| refused("change_signature needs function"))?;
-            let old = k.functions.iter().find(|x| x.fq_name == item).ok_or_else(|| refused(format!("{item}: not a function klepto captured")))?;
+            let old = custodian_kit::route::find_fn(&k.functions, &item).map_err(|e| refused(e.to_string()))?;
             let mut splices: BTreeMap<PathBuf, Vec<Splice>> = BTreeMap::new();
             let t = p.tree.text(&file)?.clone();
             let sp = item_at(&t, &file, line_of(&land.at))?;
@@ -1840,7 +1842,9 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     let mut exit_code = if proved { 0 } else { 1 };
     if opts.write {
         if !proved {
-            said.push("nothing written: the change is not proved".into());
+            // the reason with it: the first check that failed and cargo's first error line for it
+            let why = record.checks.iter().find(|c| !c.ok).map(|c| format!(": {} does not compile: {}", c.package, c.error.clone().unwrap_or_else(|| "cargo gave no error line".into()))).unwrap_or_default();
+            said.push(format!("nothing written: the change is not proved{why}"));
         } else {
             let store = crate::passenger::PassengerStore::open_or_init(&root)?;
             let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
@@ -2336,47 +2340,127 @@ fn dry_line(proved: bool, record: &TransformRecord, said: &[String]) -> String {
 }
 
 /// `transform --revert RECORD`: every file the record wrote put back as it was, when it is still as the record left
-/// it (a file the transform made is taken away again); the revert's own record beside it.
+/// it (a file the transform made is taken away again); the revert's own record beside it. RECORD may be a batch's
+/// folder: its members' records chain within a file (each member's before is the one before it's after), so the batch
+/// is reverted in one step, each file put back to what it was before the batch's first member. A revert builds no
+/// proof: the files come back from the record's snapshots, then one `cargo check` of the packages they sit in, on the
+/// kept build, says whether the tree compiles; its record holds each file's digest now and after, so a job's close
+/// covers its lines as the transform's own.
 pub fn revert(root: &Path, record_file: &Path) -> Result<Outcome> {
     let root = workspace_root(root)?;
-    let text = std::fs::read_to_string(record_file).map_err(|e| PassengerError::Io { detail: format!("{}: {e}", record_file.display()) })?;
-    let rec: TransformRecord = serde_json::from_str(&text)?;
-    if !rec.written {
-        return Err(refused(format!("{}: it wrote nothing", record_file.display())));
-    }
+    let (rec, chains, file) = if record_file.is_dir() {
+        let members = batch_members(record_file)?;
+        let first = members.first().cloned().ok_or_else(|| refused(format!("{}: no written member record in the batch", record_file.display())))?;
+        let name = format!("{} (batch of {})", record_file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), members.len());
+        let file = record_file.with_file_name(format!("{}.revert.json", record_file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        (TransformRecord { spec_name: name, ..first }, chained(&members), file)
+    } else {
+        let text = std::fs::read_to_string(record_file).map_err(|e| PassengerError::Io { detail: format!("{}: {e}", record_file.display()) })?;
+        let rec: TransformRecord = serde_json::from_str(&text)?;
+        if !rec.written {
+            return Err(refused(format!("{}: it wrote nothing", record_file.display())));
+        }
+        let chains = rec.files.iter().map(|f| (f.path.clone(), f.before.clone(), f.after.clone())).collect();
+        let file = record_file.with_file_name(format!("{}.revert.json", record_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+        (rec, chains, file)
+    };
     let store = crate::passenger::PassengerStore::open(&root)?;
     let mut files = Vec::new();
     let mut edits = EditSet::default();
-    for f in &rec.files {
-        let p = root.join(&f.path);
+    let mut removed = Vec::new();
+    for (path, was, wrote) in &chains {
+        let p = root.join(path);
         let now = std::fs::read(&p).ok();
         let now_text = String::from_utf8(now.clone().unwrap_or_default()).unwrap_or_default();
-        let back = if now.as_deref().map(hex) == Some(f.after.clone()) {
-            if f.before == "none" { None } else { Some(String::from_utf8(store.object(&f.before)?).map_err(refused)?) }
+        let now_digest = now.as_deref().map(hex).unwrap_or_else(|| "none".into());
+        let back = if &now_digest == wrote {
+            if was == "none" { None } else { Some(String::from_utf8(store.object(was)?).map_err(refused)?) }
         } else {
             // the file moved since (the members of a batch after this one): this change alone taken out, when its
             // text is still in the file once, as it wrote it
-            let dirty = || PassengerError::Dirty { detail: format!("{} changed since the transform wrote it, and its change is not found in it once as written", f.path) };
-            let (Ok(b), Ok(a)) = (store.object(&f.before), store.object(&f.after)) else { return Err(dirty()) };
+            let dirty = || PassengerError::Dirty { detail: format!("{path} changed since the transform wrote it, and its change is not found in it once as written") };
+            let (Ok(b), Ok(a)) = (store.object(was), store.object(wrote)) else { return Err(dirty()) };
             let (b, a) = (String::from_utf8(b).map_err(refused)?, String::from_utf8(a).map_err(refused)?);
             Some(take_out(&now_text, &b, &a).ok_or_else(dirty)?)
         };
-        files.push(FileWrite { path: f.path.clone(), before: f.after.clone(), after: back.as_deref().map(|b| hex(b.as_bytes())).unwrap_or_else(|| "none".into()), lines: back.as_deref().map(|b| written_lines(&now_text, b)).unwrap_or_default() });
+        // the revert's own write: from the file as it is now, so the close's coverage chains through it
+        files.push(FileWrite { path: path.clone(), before: now_digest, after: back.as_deref().map(|b| hex(b.as_bytes())).unwrap_or_else(|| "none".into()), lines: back.as_deref().map(|b| written_lines(&now_text, b)).unwrap_or_default() });
         match back {
             Some(b) => edits.files.push(FileEdit { path: p, before: now_text, after: b }),
-            None => {
-                std::fs::remove_file(&p)?;
-            }
+            None => removed.push(p),
         }
     }
-    let before = store.checkpoint_tree(&format!("before reverting {}", rec.spec_name), None)?;
+    // a snapshot of the files, not a scan of the tree: the record's digests are the proof of what came back
+    let note = |n: String| crate::passenger::CheckpointOptions { note: Some(n), ..Default::default() };
+    let before = store.checkpoint(None, None, note(format!("before reverting {}", rec.spec_name)))?;
     edits.write()?;
-    let after = store.checkpoint_tree(&format!("reverted {}", rec.spec_name), None)?;
-    let out = TransformRecord { files, checkpoint_before: Some(before.id.clone()), checkpoint_after: Some(after.id.clone()), written: true, reverts: Some(relative(&root, record_file).map(|r| r.display().to_string()).unwrap_or_default()), checks: Vec::new(), postconditions: Vec::new(), listed: Vec::new(), generated: Vec::new(), ..rec.clone() };
-    let file = record_file.with_file_name(format!("{}.revert.json", record_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+    for p in &removed {
+        std::fs::remove_file(p)?;
+    }
+    let after = store.checkpoint(None, None, note(format!("reverted {}", rec.spec_name)))?;
+    let checks = check_once(&root, &files);
+    let out = TransformRecord { files, checkpoint_before: Some(before.id.clone()), checkpoint_after: Some(after.id.clone()), written: true, reverts: Some(relative(&root, record_file).map(|r| r.display().to_string()).unwrap_or_default()), checks, postconditions: Vec::new(), listed: Vec::new(), generated: Vec::new(), ..rec.clone() };
     std::fs::write(&file, serde_json::to_string_pretty(&out)? + "\n")?;
-    let said = vec![format!("reverted {}: {} files back as they were; passenger {} → {}", rec.spec_name, out.files.len(), before.id, after.id)];
-    Ok(Outcome { root, record: out, record_file: Some(file), edits, exit_code: 0, said })
+    let compiled = out.checks.iter().all(|c| c.ok);
+    let mut said = vec![format!("reverted {}: {} files back as they were; passenger {} → {}", rec.spec_name, out.files.len(), before.id, after.id)];
+    said.push(format!("cargo check once after the revert: {} of {} packages compile{}", out.checks.iter().filter(|c| c.ok).count(), out.checks.len(), out.checks.iter().find_map(|c| c.error.as_ref()).map(|e| format!(" ({e})")).unwrap_or_default()));
+    Ok(Outcome { root, record: out, record_file: Some(file), edits, exit_code: if compiled { 0 } else { 1 }, said })
+}
+
+/// A batch folder's member records, written ones only, in the order they were written (their chain within each file).
+fn batch_members(dir: &Path) -> Result<Vec<TransformRecord>> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json") && !p.to_string_lossy().ends_with(".revert.json")).collect();
+    paths.sort();
+    Ok(paths.iter().filter_map(|p| std::fs::read_to_string(p).ok()).filter_map(|t| serde_json::from_str::<TransformRecord>(&t).ok()).filter(|r| r.written && r.reverts.is_none()).collect())
+}
+
+/// Each file the members wrote, as the batch took it: (path, its digest before the first member that wrote it, its
+/// digest after the last). Within a file the members chain: one's before is another's after.
+fn chained(members: &[TransformRecord]) -> Vec<(String, String, String)> {
+    let mut by: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for m in members {
+        for f in &m.files {
+            by.entry(f.path.clone()).or_default().push((f.before.clone(), f.after.clone()));
+        }
+    }
+    by.into_iter()
+        .map(|(path, writes)| {
+            let afters: BTreeSet<&String> = writes.iter().map(|(_, a)| a).collect();
+            let befores: BTreeSet<&String> = writes.iter().map(|(b, _)| b).collect();
+            let first = writes.iter().find(|(b, _)| !afters.contains(b)).map(|(b, _)| b.clone()).unwrap_or_else(|| writes[0].0.clone());
+            let last = writes.iter().rev().find(|(_, a)| !befores.contains(a)).map(|(_, a)| a.clone()).unwrap_or_else(|| writes[writes.len() - 1].1.clone());
+            (path, first, last)
+        })
+        .collect()
+}
+
+/// One `cargo check` of each package the files sit in (the nearest manifest's `[package] name`), on the kept build:
+/// what a revert pays instead of a proof.
+fn check_once(root: &Path, files: &[FileWrite]) -> Vec<Checked> {
+    let mut packages = BTreeSet::new();
+    for f in files {
+        let mut dir = root.join(&f.path).parent().map(Path::to_path_buf);
+        while let Some(d) = dir {
+            if let Some(name) = std::fs::read_to_string(d.join("Cargo.toml")).ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|t| t.get("package")?.get("name")?.as_str().map(str::to_string)) {
+                packages.insert(name);
+                break;
+            }
+            if d == root {
+                break;
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+    }
+    let mut oracle = crate::oracle::CargoOracle::new(root);
+    packages
+        .into_iter()
+        .map(|package| {
+            let job = klepto::CheckJob { package: package.clone(), features: Vec::new(), no_default: false };
+            let r = oracle.check_edits_tests(&job, &EditSet::default(), false);
+            let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
+            Checked { package, features: Vec::new(), no_default: false, ok: r.ok, error }
+        })
+        .collect()
 }
 
 /// `now` with one change taken out: the span `after` wrote over `before` (their common prefix and suffix aside) found
@@ -2431,5 +2515,16 @@ mod tests {
         let mut one = "struct B { x: u8 }\n".to_string();
         insert_before_close(&mut one, LineColumn { line: 1, column: 17 }, "    y: u16,\n", true);
         assert_eq!(one, "struct B { x: u8, y: u16 }\n");
+    }
+
+    #[test]
+    fn a_batchs_members_chain_within_a_file_so_the_batch_reverts_to_before_its_first() {
+        let rec = |writes: &[(&str, &str, &str)]| -> TransformRecord {
+            let files: Vec<serde_json::Value> = writes.iter().map(|(p, b, a)| serde_json::json!({"path": p, "before": b, "after": a, "lines": []})).collect();
+            serde_json::from_value(serde_json::json!({"schema": TRANSFORM_SCHEMA, "spec_name": "m", "spec": "s", "spec_digest": "d", "operation": "replace_body", "target": "t", "files": files, "checks": [], "postconditions": [], "written": true})).unwrap()
+        };
+        // three members in one file (d0 -> d1 -> d2 -> d3), one of them in a second file too
+        let members = vec![rec(&[("src/a.rs", "d0", "d1")]), rec(&[("src/a.rs", "d1", "d2"), ("src/b.rs", "e0", "e1")]), rec(&[("src/a.rs", "d2", "d3")])];
+        assert_eq!(chained(&members), vec![("src/a.rs".to_string(), "d0".to_string(), "d3".to_string()), ("src/b.rs".to_string(), "e0".to_string(), "e1".to_string())]);
     }
 }
