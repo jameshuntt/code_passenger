@@ -2270,11 +2270,11 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
         said.push(format!("left out: {} — {}", e.spec, e.why));
     }
     let mut edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
-    if members.iter().any(|m| is_manifest_change(&m.spec)) {
-        if let Some(lock) = batch_lock(&oracle, &root, &edits) {
-            said.push("Cargo.lock: cargo's, from the proof, written with the batch's manifests".into());
-            edits.files.push(lock);
-        }
+    if members.iter().any(|m| is_manifest_change(&m.spec))
+        && let Some(lock) = batch_lock(&oracle, &root, &edits)
+    {
+        said.push("Cargo.lock: cargo's, from the proof, written with the batch's manifests".into());
+        edits.files.push(lock);
     }
     let code_digest = custodian_kit::code_digest(&root, &custodian_kit::reading::spec::Scope { tests: true, ..Default::default() }.scan_options()).ok();
     let mut records: Vec<TransformRecord> = members
