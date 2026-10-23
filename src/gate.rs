@@ -299,7 +299,9 @@ pub fn workspace_root(root: &Path) -> Result<PathBuf> {
         .current_dir(root)
         .output()?;
     if !out.status.success() {
-        return Ok(root.to_path_buf());
+        // cargo could not load the workspace (a manifest mid-change): the governing root by cargo's rule, as
+        // custodian_kit's requirements reading reads it, so a proof's copy carries the root cargo will look for
+        return Ok(custodian_kit::reading::requirements::manifest::governing_root_of(root).unwrap_or_else(|| root.to_path_buf()));
     }
     let manifest = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let ws = Path::new(&manifest).parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf());

@@ -344,3 +344,41 @@ fn change_dependency_moves_every_crate_naming_it_and_keeps_what_else_the_entry_s
     assert!(code_passenger::commands::edit::dep_change_text("[dependencies]\nx = { workspace = true }\n", "x", Some("1"), None, &[]).is_err());
     assert_eq!(code_passenger::commands::edit::dep_source(&after, "x"), Some((None, Some("../x".into()))));
 }
+
+/// W8's merge by hand, as operations: `remove_dependency` refused while a source file still names the crate (each
+/// place said); `rename_paths` moves every `old_kit::` path to `new_kit::`, proved by the compile; then the line drops.
+#[test]
+fn rename_paths_then_remove_dependency_with_the_use_site_check() {
+    let d = common::fresh_copy("deps_ws");
+    let root = d.path();
+    let remove = spec(root, "drop-old", "name = \"drop-old\"\nobjective = \"o\"\noperation = \"remove_dependency\"\ntarget = \"crate:user_a\"\n\n[dependency]\nname = \"old_kit\"\n");
+    let early = transform::run(root, &Options { spec: remove.clone(), write: true, ..Options::default() });
+    let e = early.map(|o| o.said.join("\n")).unwrap_err().to_string();
+    assert!(e.contains("user_a still names old_kit") && e.contains("crates/user_a/src/lib.rs:3") && e.contains("crates/user_a/src/lib.rs:6"), "{e}");
+    let rename = spec(root, "to-new", "name = \"to-new\"\nobjective = \"o\"\noperation = \"rename_paths\"\ntarget = \"crate:user_a\"\nnew_name = \"new_kit\"\n\n[dependency]\nname = \"old_kit\"\n");
+    apply(root, &rename);
+    let lib = read(root, "crates/user_a/src/lib.rs");
+    assert!(lib.contains("use new_kit::greet;") && lib.contains("new_kit::greet()") && !lib.contains("old_kit"), "{lib}");
+    apply(root, &remove);
+    let m = read(root, "crates/user_a/Cargo.toml");
+    assert!(!m.contains("old_kit") && m.contains("new_kit"), "{m}");
+    // user_b untouched
+    assert!(read(root, "crates/user_b/src/lib.rs").contains("old_kit::greet()"));
+}
+
+/// Manifest changes batch like code changes: two callers' dependency lines in one batch, one scan, one check,
+/// a record each.
+#[test]
+fn a_batch_of_dependency_changes_is_one_transform_for_every_caller() {
+    let d = common::fresh_copy("deps_ws");
+    let root = d.path();
+    let change = |name: &str, krate: &str| spec(root, name, &format!("name = \"{name}\"\nobjective = \"o\"\noperation = \"change_dependency\"\ntarget = \"crate:{krate}\"\n\n[dependency]\nname = \"old_kit\"\nversion = \"0.1\"\npath = \"../old_kit\"\n"));
+    let specs = vec![change("a-old", "user_a"), change("b-old", "user_b")];
+    let o = transform::run_batch(root, &transform::BatchOptions { specs, write: true, out_dir: Some(root.join(".records")), ..Default::default() }).unwrap();
+    assert_eq!(o.exit_code, 0, "{}", o.said.join("\n"));
+    assert_eq!(o.records.len(), 2, "{}", o.said.join("\n"));
+    for k in ["user_a", "user_b"] {
+        let m = read(root, &format!("crates/{k}/Cargo.toml"));
+        assert!(m.contains("version = \"0.1\""), "{m}");
+    }
+}

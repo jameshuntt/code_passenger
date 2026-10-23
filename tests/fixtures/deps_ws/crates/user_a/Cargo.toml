@@ -1,0 +1,9 @@
+[package]
+name = "user_a"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+old_kit = { path = "../old_kit" }
+new_kit = { path = "../new_kit" }

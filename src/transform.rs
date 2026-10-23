@@ -1115,6 +1115,39 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
                 }
             }
         }
+        RemoveDependency => {
+            let dep = spec.dependency.as_ref().map(|d| d.name.clone()).ok_or_else(|| refused("remove_dependency needs dependency"))?;
+            let path = abs(root, &land.file);
+            let crate_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf());
+            // the use-site check: nothing in the crate's sources still names the dependency's paths
+            let left = crate_names(&crate_dir, &dep.replace('-', "_"));
+            if !left.is_empty() {
+                return Err(refused(format!("{} still names {dep}: {}", land.package, left.iter().map(|(f, l)| format!("{}:{l}", relative(root, f).unwrap_or_else(|_| f.clone()).display())).collect::<Vec<_>>().join(", "))));
+            }
+            let (after, n) = crate::commands::edit::dep_remove_text(p.tree.text(&path)?, &dep)?;
+            if n == 0 {
+                return Err(refused(format!("{}: names no {dep} to remove", land.file)));
+            }
+            *p.tree.text(&path)? = after;
+            p.also.push(format!("{dep} dropped from {} ({n} line(s))", land.file));
+        }
+        RenamePaths => {
+            let old = spec.dependency.as_ref().map(|d| d.name.replace('-', "_")).ok_or_else(|| refused("rename_paths needs dependency (the crate the paths name now)"))?;
+            let new = spec.new_name.clone().map(|n| n.replace('-', "_")).ok_or_else(|| refused("rename_paths needs new_name (the crate they name after)"))?;
+            let crate_dir = abs(root, &land.file).parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf());
+            let mut changed = 0;
+            for (file, _) in crate_names(&crate_dir, &old).into_iter().map(|(f, _)| (f, ())).collect::<BTreeMap<_, _>>() {
+                let (after, n) = rename_crate_paths(&p.tree.text(&file)?.clone(), &old, &new);
+                if n > 0 {
+                    *p.tree.text(&file)? = after;
+                    changed += n;
+                }
+            }
+            if changed == 0 {
+                return Err(refused(format!("{}: no source file names {old}", land.package)));
+            }
+            p.also.push(format!("{changed} path(s) through {old} now through {new} in {}", land.package));
+        }
         DeclareFeature => {
             let d = change::feature_declaration(k, root, spec).map_err(refused)?;
             if !d.problems.is_empty() {
@@ -2034,11 +2067,8 @@ fn members_of(k: &klepto::Klepto, root: &Path, specs: &[PathBuf]) -> Result<(Vec
     for path in specs {
         let spec_path = if path.is_absolute() { path.clone() } else { root.join(path) };
         let spec = ChangeSpec::from_path(&spec_path).map_err(refused)?;
-        // a change to a manifest moves the lock file cargo writes in the proof: one at a time, never in a batch
-        if matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature) {
-            excluded.push(Excluded { spec: spec.name.clone(), why: format!("{} changes a manifest: made alone, never in a batch", spec.op().as_str()) });
-            continue;
-        }
+        // a change to a manifest is a member like a code change: the lock file cargo writes in the proof is carried
+        // with the batch's write (`batch_lock`), one preflight, one transform, one check for every caller
         let planned_member = change::landing(k, root, &spec).map_err(refused).and_then(|land| plan(k, root, &spec, &land).map(|p| (land, p)));
         let (land, planned) = match planned_member {
             Ok(x) => x,
@@ -2059,6 +2089,21 @@ fn members_of(k: &klepto::Klepto, root: &Path, specs: &[PathBuf]) -> Result<(Vec
         members.push(Member { spec, spec_path, land, planned, spans });
     }
     Ok((members, excluded))
+}
+
+/// A change spec that edits a manifest (a dependency added, changed or removed, a feature declared).
+fn is_manifest_change(spec: &ChangeSpec) -> bool {
+    matches!(spec.op(), Operation::AddDependency | Operation::ChangeDependency | Operation::DeclareFeature | Operation::RemoveDependency)
+}
+
+/// The lock file cargo wrote in the proof's copy for the batch's manifests, as an edit of the tree's, when it moved.
+fn batch_lock(oracle: &crate::oracle::CargoOracle, root: &Path, edits: &EditSet) -> Option<FileEdit> {
+    let d = oracle.scratch_dir()?;
+    let ws = oracle.workspace().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf());
+    let after = std::fs::read_to_string(d.join("Cargo.lock")).ok()?;
+    let lock = ws.join("Cargo.lock");
+    let before = std::fs::read_to_string(&lock).unwrap_or_default();
+    (after != before && !edits.files.iter().any(|f| f.path == lock)).then_some(FileEdit { path: lock, before, after })
 }
 
 /// `transform --batch`: the members planned over one scan, placed together, proved once, written once, recorded one
@@ -2115,7 +2160,9 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
         let mut errors: Vec<klepto::Diagnostic> = Vec::new();
         'packages: for pp in &packages {
             let Some(model) = k.features.get(&pp.package) else { continue };
-            let desired = change::model_after(&k, &root, &members[0].spec, &pp.package).unwrap_or_else(|| model.clone());
+            // the configurations as the member that changes this package's manifest leaves them (else the first's)
+            let spec_of = members.iter().find(|m| m.land.package == pp.package && is_manifest_change(&m.spec)).unwrap_or(&members[0]);
+            let desired = change::model_after(&k, &root, &spec_of.spec, &pp.package).unwrap_or_else(|| model.clone());
             for job in klepto::check_matrix(&desired) {
                 let r = oracle.check_edits_tests(&job, &edits, pp.tests);
                 let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
@@ -2222,7 +2269,13 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
     for e in &excluded {
         said.push(format!("left out: {} — {}", e.spec, e.why));
     }
-    let edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
+    let mut edits = EditSet { files: placed.files.iter().map(|(p, (b, a))| FileEdit { path: p.clone(), before: b.clone(), after: a.clone() }).collect(), manifest: None };
+    if members.iter().any(|m| is_manifest_change(&m.spec)) {
+        if let Some(lock) = batch_lock(&oracle, &root, &edits) {
+            said.push("Cargo.lock: cargo's, from the proof, written with the batch's manifests".into());
+            edits.files.push(lock);
+        }
+    }
     let code_digest = custodian_kit::code_digest(&root, &custodian_kit::reading::spec::Scope { tests: true, ..Default::default() }.scan_options()).ok();
     let mut records: Vec<TransformRecord> = members
         .iter()
@@ -2500,6 +2553,62 @@ pub fn render(o: &Outcome) -> String {
     s
 }
 
+/// Whether `b` may sit just before a crate's name in a path that starts with it (not inside another name, not after
+/// another path's `::`).
+fn starts_a_path(text: &str, at: usize) -> bool {
+    let before = &text[..at];
+    let prev = before.chars().last();
+    !prev.is_some_and(|c| c.is_alphanumeric() || c == '_') && !before.ends_with("::")
+}
+
+/// The places (file, line) in the `.rs` files under `dir` (its `target` aside) that name the crate `name`: a path
+/// `name::`, `use name`, `extern crate name`.
+fn crate_names(dir: &Path, name: &str) -> Vec<(PathBuf, usize)> {
+    let mut out = Vec::new();
+    for e in walkdir::WalkDir::new(dir).into_iter().filter_entry(|e| e.file_name() != "target" && e.file_name() != ".git").flatten() {
+        if e.path().extension().is_none_or(|x| x != "rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        for (i, line) in text.lines().enumerate() {
+            let named = line.match_indices(name).any(|(at, _)| {
+                let rest = &line[at + name.len()..];
+                let next = rest.chars().next();
+                starts_a_path(line, at) && (rest.starts_with("::") || ((line[..at].trim_end().ends_with("use") || line[..at].trim_end().ends_with("crate")) && !next.is_some_and(|c| c.is_alphanumeric() || c == '_')))
+            });
+            if named {
+                out.push((e.path().to_path_buf(), i + 1));
+            }
+        }
+    }
+    out
+}
+
+/// `text` with every path through the crate `old` made a path through `new` (`old::` → `new::`, `use old` and
+/// `extern crate old` too), and how many.
+fn rename_crate_paths(text: &str, old: &str, new: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut n = 0;
+    let mut last = 0;
+    for (at, _) in text.match_indices(old) {
+        if at < last {
+            continue;
+        }
+        let rest = &text[at + old.len()..];
+        let ends = !rest.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let head = text[..at].trim_end();
+        let path = rest.starts_with("::") || (ends && (head.ends_with("use") || head.ends_with("crate")));
+        if starts_a_path(text, at) && path {
+            out.push_str(&text[last..at]);
+            out.push_str(new);
+            last = at + old.len();
+            n += 1;
+        }
+    }
+    out.push_str(&text[last..]);
+    (out, n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2515,6 +2624,19 @@ mod tests {
         let mut one = "struct B { x: u8 }\n".to_string();
         insert_before_close(&mut one, LineColumn { line: 1, column: 17 }, "    y: u16,\n", true);
         assert_eq!(one, "struct B { x: u8, y: u16 }\n");
+    }
+
+    #[test]
+    fn rename_paths_moves_every_path_through_one_crate_and_nothing_else() {
+        let text = "use old_kit::a;\nextern crate old_kit;\nfn f() { old_kit::b(); my_old_kit::c(); x::old_kit::d(); }\n";
+        let (after, n) = rename_crate_paths(text, "old_kit", "new_kit");
+        assert_eq!(n, 3);
+        assert_eq!(after, "use new_kit::a;\nextern crate new_kit;\nfn f() { new_kit::b(); my_old_kit::c(); x::old_kit::d(); }\n");
+        let dir = std::env::temp_dir().join(format!("cp-names-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), text).unwrap();
+        assert_eq!(crate_names(&dir, "old_kit").iter().map(|(_, l)| *l).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert!(crate_names(&dir, "kit").is_empty(), "a name inside another is not the crate");
     }
 
     #[test]

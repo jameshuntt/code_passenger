@@ -434,6 +434,41 @@ fn named_by_features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {
 }
 
 /// `dep remove`.
+/// A manifest's text with the dependency `name` dropped from every dependency table (`dependencies`,
+/// `dev-dependencies`, `build-dependencies`, and each `target.<cfg>.` one), with how many lines went; refused while a
+/// feature names it.
+pub fn dep_remove_text(text: &str, name: &str) -> Result<(String, usize)> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| PassengerError::TransformRefused { detail: e.to_string() })?;
+    let naming = named_by_features(&doc, name);
+    if !naming.is_empty() {
+        return Err(PassengerError::DepInUse { detail: format!("feature(s) {} name {name}", naming.join(", ")) });
+    }
+    let keys = [name.to_string(), name.replace('_', "-"), name.replace('-', "_")];
+    let mut n = 0;
+    let mut drop = |t: &mut dyn toml_edit::TableLike| {
+        for k in &keys {
+            if t.remove(k).is_some() {
+                n += 1;
+            }
+        }
+    };
+    for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(t) = doc.get_mut(table).and_then(|d| d.as_table_like_mut()) {
+            drop(t);
+        }
+    }
+    if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_like_mut()) {
+        for (_, cfg) in targets.iter_mut() {
+            for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                if let Some(t) = cfg.get_mut(table).and_then(|d| d.as_table_like_mut()) {
+                    drop(t);
+                }
+            }
+        }
+    }
+    Ok((doc.to_string(), n))
+}
+
 pub fn dep_remove(root: &Path, krate: &str, spec: &str, workspace_table: bool) -> Result<Edited> {
     let root = workspace_root(root)?;
     let (name, _) = split_spec(spec);
