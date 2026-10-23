@@ -147,6 +147,9 @@ impl CargoOracle {
     }
 
     fn run_tests(&mut self, job: &CheckJob, cwd: &Path, tests: bool) -> OracleResult {
+        // cargo's name for the package (`-` where its manifest says so), never klepto's `_`
+        let named = CheckJob { package: self.proof.as_ref().map_or_else(|| job.package.clone(), |p| p.cargo_name(&job.package)), ..job.clone() };
+        let job = &named;
         let target_dir = self.proof.as_ref().map(|d| d.target().to_path_buf()).unwrap_or_else(|| cwd.join("target"));
         let cwd = cwd.to_path_buf();
         // the declared line (`crate::lines::Cargo`), run by the cargo that runs us

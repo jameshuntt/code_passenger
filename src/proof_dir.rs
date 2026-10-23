@@ -56,12 +56,24 @@ pub const PROOF_DIR_ENV: &str = custodian_kit::proof_place::PROOF_DIR_ENV;
 /// custodian's test runs use too.
 pub struct ProofDir {
     place: custodian_kit::proof_place::ProofPlace,
+    /// cargo's name of each member whose crate name differs (`-` where the manifest says so).
+    names: std::collections::BTreeMap<String, String>,
 }
 
 impl ProofDir {
     /// The place for `workspace` (its root), held until dropped, the copy synced with the workspace as it is.
     pub fn take(workspace: &Path) -> Result<Self> {
-        Ok(ProofDir { place: custodian_kit::proof_place::ProofPlace::take(workspace)? })
+        Ok(ProofDir { place: custodian_kit::proof_place::ProofPlace::take(workspace)?, names: crate::cargo::cargo_names(workspace) })
+    }
+
+    /// The name cargo knows `package` by (`-p`): the manifest's, `-` where it says so.
+    pub fn cargo_name(&self, package: &str) -> String {
+        self.names.get(package).or_else(|| self.names.get(&package.replace('-', "_"))).cloned().unwrap_or_else(|| package.to_string())
+    }
+
+    /// The kept build's incremental folders let go, after a batch (the bytes freed).
+    pub fn prune_incremental(&self) -> u64 {
+        self.place.prune_incremental()
     }
 
     /// The copy of the workspace's root.
@@ -89,10 +101,10 @@ impl ProofDir {
     /// each in the toolkit's proof form, or `None` where the expansion has no such function; the line and its time.
     pub fn expand_fns(&self, package: &str, items: &[String]) -> Result<(BTreeMap<String, Option<String>>, String, i64)> {
         use custodian_kit::exec::{line, Cargo, Plan, Watch};
-        let l = Cargo::expand(self.root().join("Cargo.toml").as_os_str(), package).lib().ugly();
+        let l = Cargo::expand(self.root().join("Cargo.toml").as_os_str(), self.cargo_name(package)).lib().ugly();
         let mut ln = line("expand", &l).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;
         ln.env.extend(self.place.env());
-        let shown = format!("cargo expand -p {package} --lib --ugly");
+        let shown = format!("cargo expand -p {} --lib --ugly", self.cargo_name(package));
         let walked = Plan::new("proof-expand").then(ln).walk(Watch::Quiet, |_, _| {}).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;
         let w = walked.into_iter().next().ok_or_else(|| PassengerError::TransformRefused { detail: "cargo expand did not run".into() })?;
         if w.code != Some(0) {
@@ -107,7 +119,7 @@ impl ProofDir {
     /// `cargo test -p <package>` on the copy, on the kept build.
     pub fn test(&self, package: &str) -> Result<TestRun> {
         use custodian_kit::exec::{line, Cargo, Plan, Watch};
-        let l = Cargo::test(self.root().join("Cargo.toml").as_os_str(), package);
+        let l = Cargo::test(self.root().join("Cargo.toml").as_os_str(), self.cargo_name(package));
         let mut ln = line("tests", &l).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?.going_on();
         ln.env.extend(self.place.env());
         let walked = Plan::new("proof-tests").then(ln).walk(Watch::Quiet, |_, _| {}).map_err(|e| PassengerError::TransformRefused { detail: e.to_string() })?;

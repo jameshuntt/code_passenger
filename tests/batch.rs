@@ -155,3 +155,38 @@ fn the_toolkit_batch_line_finds_each_member_again_and_swaps_the_shape_under_one_
     let t = lib(root);
     assert_eq!(t.matches("simple_impl::return_if!(").count(), 4, "{t}");
 }
+
+/// A batch checks each package in its default configuration only (no member here touches a cfg), names a package
+/// as cargo knows it (`rule-user`, whose crate is `rule_user`), and goes on past a package that fails the same on the
+/// base, saying so per package; the incremental folders of the kept build are let go after it.
+#[test]
+fn a_batch_checks_the_default_configuration_names_packages_as_cargo_does_and_goes_past_a_base_failure() {
+    let d = common::fresh_copy("batch_ws");
+    let root = d.path();
+    let edit = |p: &str, from: &str, to: &str| {
+        let f = root.join(p);
+        std::fs::write(&f, common::read(&f).replace(from, to)).unwrap();
+    };
+    edit("user/Cargo.toml", "name = \"user\"", "name = \"rule-user\"");
+    edit("far/Cargo.toml", "user = { path", "rule-user = { path");
+    edit("far/src/lib.rs", "user::", "rule_user::");
+    let run = |names: &[(&str, &str, &str, &str)], dir: &str| {
+        let specs = names.iter().map(|(n, c, r, v)| spec(root, n, n, c, r, v, true)).collect();
+        transform::run_batch(root, &BatchOptions { specs, write: true, out_dir: Some(root.join(dir)), preflights: BTreeMap::new(), after_proof: None, tests: false }).unwrap()
+    };
+    let b = run(&[("level", "n > 2", "Err(\"over two\")", "Ok(n)")], ".records/a");
+    assert_eq!(b.exit_code, 0, "{}", b.said.join("\n"));
+    let checks = &b.records[0].0.checks;
+    assert!(checks.iter().all(|c| c.ok && c.features.is_empty() && !c.no_default), "the default configuration only: {checks:?}");
+    assert!(checks.iter().any(|c| c.package.replace('-', "_") == "rule_user"), "{checks:?}");
+    assert!(!b.said.iter().any(|l| l.contains("fails the same on the base")), "{}", b.said.join("\n"));
+    // the dependent broken on the base: the batch goes past it, and says so for that package
+    std::fs::write(root.join("user/src/lib.rs"), common::read(&root.join("user/src/lib.rs")) + "\ncompile_error!(\"broken at the base\");\n").unwrap();
+    let b = run(&[("name", "s.is_empty()", "Err(\"no name\")", "Ok(s)")], ".records/b");
+    assert_eq!(b.exit_code, 0, "{}", b.said.join("\n"));
+    assert!(b.said.iter().any(|l| l.contains("fails the same on the base") && l.contains("broken at the base")), "{}", b.said.join("\n"));
+    assert!(b.records.iter().all(|(r, _)| r.written), "{:?}", b.excluded);
+    assert!(lib(root).contains("simple_impl::return_if!(s.is_empty() => Err(\"no name\"));"));
+    let proof = ProofDir::take(root).unwrap();
+    assert!(!proof.target().join("debug/incremental").exists(), "incremental let go after the batch");
+}

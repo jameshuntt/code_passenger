@@ -2108,6 +2108,35 @@ fn batch_lock(oracle: &crate::oracle::CargoOracle, root: &Path, edits: &EditSet)
 
 /// `transform --batch`: the members planned over one scan, placed together, proved once, written once, recorded one
 /// by one.
+/// Whether a change touches what a package is built with: its manifest (features, dependencies), or a `cfg` it
+/// writes. Only such a change is checked across the package's configurations; every other is checked in the default.
+fn touches_cfg(spec: &ChangeSpec) -> bool {
+    is_manifest_change(spec) || spec.to_1o().is_ok_and(|t| t.contains("cfg("))
+}
+
+/// The configurations a package is checked in: the default one alone, or (a change that touches its cfg) klepto's
+/// matrix, never naming a feature cargo makes for an optional dependency (cargo refuses it when the manifest says
+/// `dep:` anywhere), each configuration once.
+fn configurations_of(desired: &klepto::FeatureModel, cfg: bool) -> Vec<klepto::CheckJob> {
+    if !cfg {
+        return vec![klepto::CheckJob { package: desired.package.clone(), features: Vec::new(), no_default: false }];
+    }
+    let mut seen: BTreeSet<(Vec<String>, bool)> = BTreeSet::new();
+    klepto::check_matrix(desired)
+        .into_iter()
+        .map(|mut j| {
+            j.features.retain(|f| !desired.features.get(f).is_some_and(|i| i.implicit));
+            j
+        })
+        .filter(|j| seen.insert((j.features.clone(), j.no_default)))
+        .collect()
+}
+
+/// A configuration in words: ` --no-default-features --features a,b`, empty for the default.
+fn config_words(job: &klepto::CheckJob) -> String {
+    format!("{}{}", if job.no_default { " --no-default-features" } else { "" }, if job.features.is_empty() { String::new() } else { format!(" --features {}", job.features.join(",")) })
+}
+
 pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
     let root = workspace_root(root)?;
     if opts.specs.is_empty() {
@@ -2141,7 +2170,10 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
     let mut postconditions: Vec<Vec<(String, bool)>> = Vec::new();
     let mut expansions: BTreeMap<String, Expansion> = BTreeMap::new();
     let mut packages_line = String::new();
-    for _round in 0..8 {
+    // what fails the same on the base is not the batch's: each configuration's base answer, asked once
+    let mut at_base: BTreeMap<(String, Vec<String>, bool), Option<String>> = BTreeMap::new();
+    // rounds until every member left compiles: each round leaves out at least one member or ends the batch
+    loop {
         if members.is_empty() {
             break;
         }
@@ -2158,20 +2190,60 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
         packages_line = proof_line(&packages);
         checks.clear();
         let mut errors: Vec<klepto::Diagnostic> = Vec::new();
-        'packages: for pp in &packages {
+        let mut base_failing: BTreeSet<String> = BTreeSet::new();
+        // every package checked, each in its configurations: the default one, and the configurations matrix only for
+        // a package a member changes the cfg or the features of
+        for pp in &packages {
             let Some(model) = k.features.get(&pp.package) else { continue };
-            // the configurations as the member that changes this package's manifest leaves them (else the first's)
-            let spec_of = members.iter().find(|m| m.land.package == pp.package && is_manifest_change(&m.spec)).unwrap_or(&members[0]);
+            let touching: Vec<&Member> = members.iter().filter(|m| m.land.package == pp.package && touches_cfg(&m.spec)).collect();
+            let spec_of = touching.iter().find(|m| is_manifest_change(&m.spec)).copied().unwrap_or(&members[0]);
             let desired = change::model_after(&k, &root, &spec_of.spec, &pp.package).unwrap_or_else(|| model.clone());
-            for job in klepto::check_matrix(&desired) {
+            let mut compiled = 0usize;
+            let mut configurations = 0usize;
+            for job in configurations_of(&desired, !touching.is_empty()) {
+                configurations += 1;
                 let r = oracle.check_edits_tests(&job, &edits, pp.tests);
                 let error = r.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone());
-                checks.push(Checked { package: pp.package.clone(), features: job.features.clone(), no_default: job.no_default, ok: r.ok, error });
-                if !r.ok {
-                    errors = r.diagnostics.into_iter().filter(|d| d.level == "error").collect();
-                    break 'packages;
+                if r.ok {
+                    compiled += 1;
+                    checks.push(Checked { package: pp.package.clone(), features: job.features.clone(), no_default: job.no_default, ok: true, error: None });
+                    continue;
+                }
+                // the same configuration on the base, the batch's edits left out
+                let key = (job.package.clone(), job.features.clone(), job.no_default);
+                let base = match at_base.get(&key) {
+                    Some(b) => b.clone(),
+                    None => {
+                        let b = oracle.check_edits_tests(&job, &EditSet { files: Vec::new(), manifest: None }, pp.tests);
+                        let e = (!b.ok).then(|| b.diagnostics.iter().find(|d| d.level == "error").map(|d| d.message.clone()).unwrap_or_else(|| "does not compile".into()));
+                        at_base.insert(key, e.clone());
+                        e
+                    }
+                };
+                match base {
+                    Some(b) => said.push(format!("cargo check {}{}: fails the same on the base ({b}): not the batch's, left out of the proof", pp.package, config_words(&job))),
+                    None => {
+                        said.push(format!("cargo check {}{}: {}", pp.package, config_words(&job), error.clone().unwrap_or_default()));
+                        checks.push(Checked { package: pp.package.clone(), features: job.features.clone(), no_default: job.no_default, ok: false, error });
+                        errors.extend(r.diagnostics.into_iter().filter(|d| d.level == "error"));
+                    }
                 }
             }
+            if configurations > 0 && compiled == 0 && checks.iter().all(|c| c.package != pp.package) {
+                base_failing.insert(pp.package.clone());
+            }
+        }
+        // a member whose own package compiles in no configuration on the base cannot be proved: left out, named
+        let before_n = members.len();
+        for i in (0..members.len()).rev() {
+            if base_failing.contains(&members[i].land.package) {
+                let m = members.remove(i);
+                excluded.push(Excluded { spec: m.spec.name.clone(), why: format!("its package {} does not compile on the base in any configuration checked", m.land.package) });
+            }
+        }
+        if members.len() < before_n {
+            placed = place(&members)?;
+            continue;
         }
         if !errors.is_empty() {
             // the members whose lines an error names
@@ -2185,7 +2257,8 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
                 }
             }
             if blamed.is_empty() {
-                said.push(format!("cargo check: an error no member's lines hold: {}", errors[0].message));
+                let failing: BTreeSet<&str> = checks.iter().filter(|c| !c.ok).map(|c| c.package.as_str()).collect();
+                said.push(format!("cargo check: errors no member's lines hold, in {}: {} (the batch stops here, nothing written)", failing.into_iter().collect::<Vec<_>>().join(", "), errors[0].message));
                 break;
             }
             for i in blamed.iter().rev() {
@@ -2356,6 +2429,13 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
             }
         }
         out.push((r, file));
+    }
+    // the kept build's incremental folders let go: a batch compiles each change once
+    if let Some(p) = oracle.proof() {
+        let freed = p.prune_incremental();
+        if freed > 0 {
+            said.push(format!("the proof's incremental folders let go ({} MB)", freed / 1_000_000));
+        }
     }
     Ok(BatchOutcome { root, records: out, excluded, edits, expansions, tests: compared, said, exit_code })
 }

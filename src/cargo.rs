@@ -68,3 +68,18 @@ pub fn package_with_manifest<'p>(packages: &'p BTreeMap<String, PackageInfo>, ma
 pub fn manifest_of(packages: &BTreeMap<String, PackageInfo>, package: &str) -> Option<PathBuf> {
     packages.get(&package.replace('-', "_")).map(|p| p.manifest_path.clone())
 }
+
+/// The name cargo knows a package by (`-p`), from its manifest's `[package] name`: klepto's names are the crates'
+/// (`recipe_session_transfer_plan_adapter`), cargo's keep the manifest's `-` (`recipe-session-transfer-plan-adapter`).
+pub fn manifest_name(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let doc: toml::Table = text.parse().ok()?;
+    doc.get("package")?.get("name")?.as_str().map(str::to_string)
+}
+
+/// Each workspace member's cargo name by klepto's name, where the two differ.
+pub fn cargo_names(root: &Path) -> std::collections::BTreeMap<String, String> {
+    let Ok(b) = builder(root) else { return Default::default() };
+    b.packages().iter().filter_map(|(n, p)| manifest_name(&p.manifest_path).filter(|m| m != n).map(|m| (n.clone(), m))).collect()
+}
+
