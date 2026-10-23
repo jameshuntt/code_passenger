@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.8 (2026-10-23)
+
+On custodian_kit 0.3.11. Two agents' runs on the kit found the writer's gaps: undoing a swap cost 77 s each and
+could not undo a batch in one step, two `From` impls on one type had one target, a dependency change could not join
+a batch, a failed proof check gave no reason, the proof's copy could miss the workspace root cargo looks for, and a
+merge had to drop a dependency and move a crate's paths by hand. Each is fixed here with a test on a fixture.
+Nothing is removed from the API (the rustdoc JSON of 0.4.7 and 0.4.8 differ by 2 additions and no removal). Links are pinned to dac7b45; the lines they replace to 3142101 (0.4.7).
+
+- **Revert.** `revert` ([transform.rs L2402](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2402)) takes a batch's folder and puts each file back to
+  before its first member in one step (`chained`, [L2472](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2472)); it snapshots the files instead
+  of scanning the tree twice, and pays one `cargo check` on the kept build (`check_once`, [L2492](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2492));
+  its record holds each file's digest now, so a close covers it. Was [transform.rs L2340](https://github.com/jameshuntt/code_passenger/blob/3142101f3217404218fbcf56f87697258ce10027/src/transform.rs#L2340).
+  Test: `a_batchs_members_chain_within_a_file_so_the_batch_reverts_to_before_its_first`.
+- **Routes with their impl.** Targets resolve through custodian_kit's `route::find_fn`; an expansion finds a function in
+  the impl the route names (`in_named_impl`, [to_toolkit.rs L199](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/to_toolkit.rs#L199)).
+- **Manifest changes in a batch.** A dependency change is a member like a code change: one scan, one check, cargo's
+  lock carried with the write (`batch_lock`, [transform.rs L2100](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2100)); it was left out
+  ([transform.rs L2035](https://github.com/jameshuntt/code_passenger/blob/3142101f3217404218fbcf56f87697258ce10027/src/transform.rs#L2035)). Test: `a_batch_of_dependency_changes_is_one_transform_for_every_caller`.
+- **remove_dependency and rename_paths.** [transform.rs L1118](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L1118) drops a dependency once no source
+  file of the crate names it (`crate_names`, [L2566](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2566), each place said); [L1134](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L1134)
+  moves every `old::` path to `new::` (`rename_crate_paths`, [L2589](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L2589)); both proved by the compile.
+  Tests: `rename_paths_then_remove_dependency_with_the_use_site_check`, `rename_paths_moves_every_path_through_one_crate_and_nothing_else`.
+- **A failed check says why.** `first_error_line` ([oracle.rs L213](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/oracle.rs#L213)) carries cargo's first error line
+  where it took its last ([oracle.rs L188](https://github.com/jameshuntt/code_passenger/blob/3142101f3217404218fbcf56f87697258ce10027/src/oracle.rs#L188)), and "nothing written" names it
+  ([transform.rs L1880](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/transform.rs#L1880)). Test: `a_failed_check_with_no_compiler_message_carries_cargos_first_error_line`.
+- **The workspace root.** When cargo cannot load the workspace, the root is the governing root by the requirements
+  reading's rule ([gate.rs L304](https://github.com/jameshuntt/code_passenger/blob/dac7b4531dcf51d8c022ebea50f0f7514eb1f104/src/gate.rs#L304)), so the proof's copy carries it.
+
 ## 0.4.7 (2026-10-20)
 
 On custodian_kit 0.3.9. A test run after last night's fleet_ops swaps built every dependent's dependent from an empty
