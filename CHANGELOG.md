@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.9 (2026-10-23)
+
+The whole-workspace swap job ran its batches on 282 crates and found where the batch's proof costs too much or gives
+up: every configuration of every package compiled for a swap that touches no cfg (the proof folder grew to 168 GB),
+the first failing package ended the round, eight rounds and the batch stopped without saying why, a configuration that
+already failed on the base failed the whole batch, a package named `recipe-session-transfer-plan-adapter` was asked
+for as `recipe_session_transfer_plan_adapter`, and an optional dependency's implicit feature was passed to cargo,
+which refuses it. This release fixes each. Nothing is removed from the API. Links are pinned to e664bc8; the lines
+they replace to c7a77ae (0.4.8). custodian_kit 0.3.13.
+
+- **One configuration per package, the matrix only for a cfg change.** A package is checked in its default
+  configuration; klepto's matrix only for a package a member changes the manifest of or writes a `cfg(` in
+  (`touches_cfg`, [transform.rs L2113](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2113); `configurations_of`,
+  [L2120](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2120)). Every package ran the whole matrix
+  ([transform.rs L2166](https://github.com/jameshuntt/code_passenger/blob/c7a77ae9e64f5285435f4230d27cd71e84580a5d/src/transform.rs#L2166)).
+- **Never an optional dependency's implicit feature.** `configurations_of` leaves out a feature cargo makes for an
+  optional dependency, and a configuration is checked once. Same lines.
+- **A failure the base has is not the batch's.** A configuration that fails is checked again on the base with the
+  batch's edits left out, once per configuration ([transform.rs L2174](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2174)); one that fails
+  the same there is said per package and left out of the proof ([L2224](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2224)), and a member
+  whose own package compiles in no configuration on the base is left out and named. It failed the batch.
+- **Every package checked, every round, until the members left compile.** The rounds were eight
+  ([transform.rs L2144](https://github.com/jameshuntt/code_passenger/blob/c7a77ae9e64f5285435f4230d27cd71e84580a5d/src/transform.rs#L2144)) and each stopped at the first failing package
+  ([L2172](https://github.com/jameshuntt/code_passenger/blob/c7a77ae9e64f5285435f4230d27cd71e84580a5d/src/transform.rs#L2172)). Now each round checks every package, leaves out every member an error points
+  into, and runs until none is left out; errors no member's lines hold end the batch, naming the packages
+  ([L2261](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2261)).
+- **Packages as cargo names them.** `-p` takes the manifest's `[package] name` (`manifest_name`,
+  [cargo.rs L74](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/cargo.rs#L74); `ProofDir::cargo_name`, [proof_dir.rs L70](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/proof_dir.rs#L70)) in the
+  check ([oracle.rs L151](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/oracle.rs#L151)), the expansion and the tests.
+- **The kept build's incremental folders go after each batch** ([transform.rs L2437](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2437)),
+  and custodian_kit 0.3.13 holds the build under its cap before each compile.
+
+Test: `a_batch_checks_the_default_configuration_names_packages_as_cargo_does_and_goes_past_a_base_failure`
+(tests/batch.rs): a member is checked in the default configuration only, the dependent renamed `rule-user` is
+checked as cargo names it, then broken on the base the batch goes past it, says so, writes its member, and the
+incremental folders are gone. `cargo test`: 85 passed, 0 failed.
+
+API, additive: `cargo::manifest_name`, `cargo::cargo_names`, `ProofDir::cargo_name`, `ProofDir::prune_incremental`.
+
 ## 0.4.8 (2026-10-23)
 
 On custodian_kit 0.3.11. Two agents' runs on the kit found the writer's gaps: undoing a swap cost 77 s each and
