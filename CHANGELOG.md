@@ -8,7 +8,7 @@ the first failing package ended the round, eight rounds and the batch stopped wi
 already failed on the base failed the whole batch, a package named `recipe-session-transfer-plan-adapter` was asked
 for as `recipe_session_transfer_plan_adapter`, and an optional dependency's implicit feature was passed to cargo,
 which refuses it. This release fixes each. Nothing is removed from the API. Links are pinned to e664bc8; the lines
-they replace to c7a77ae (0.4.8). custodian_kit 0.3.13.
+they replace to c7a77ae (0.4.8). custodian_kit 0.3.14.
 
 - **One configuration per package, the matrix only for a cfg change.** A package is checked in its default
   configuration; klepto's matrix only for a package a member changes the manifest of or writes a `cfg(` in
@@ -30,7 +30,7 @@ they replace to c7a77ae (0.4.8). custodian_kit 0.3.13.
   [cargo.rs L74](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/cargo.rs#L74); `ProofDir::cargo_name`, [proof_dir.rs L70](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/proof_dir.rs#L70)) in the
   check ([oracle.rs L151](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/oracle.rs#L151)), the expansion and the tests.
 - **The kept build's incremental folders go after each batch** ([transform.rs L2437](https://github.com/jameshuntt/code_passenger/blob/e664bc87c6034b62be6116baf79257ad172c0f56/src/transform.rs#L2437)),
-  and custodian_kit 0.3.13 holds the build under its cap before each compile.
+  and custodian_kit 0.3.14 holds the build under its cap before each compile.
 
 Test: `a_batch_checks_the_default_configuration_names_packages_as_cargo_does_and_goes_past_a_base_failure`
 (tests/batch.rs): a member is checked in the default configuration only, the dependent renamed `rule-user` is

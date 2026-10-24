@@ -45,7 +45,7 @@ tempfile = "3.19.1"
 # the one extractor
 klepto = "0.3.4"
 # jobs as folders, the journal and its receipts (agent mode); the scope depth of what a feature turns off
-custodian_kit = { version = "0.3.13", path = "../custodian_kit" }
+custodian_kit = { version = "0.3.14", path = "../custodian_kit" }
 # the workspace features document: 1o, its schema declared once
 core-1o = "0.1.1"
 # every command a declared line, every run decided by the executor with a receipt
