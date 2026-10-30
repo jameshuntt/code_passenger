@@ -83,7 +83,7 @@ pub fn run(root: &Path, opts: &GateOptions) -> Result<GateOutcome> {
     };
     let can_write = opts.write && !opts.check && !plan.is_empty() && exit_code == 0;
     let written = if can_write {
-        crate::gate::outside_an_experiment(root, "gate --write")?;
+        crate::gate::outside_an_experiment(root, &edits, "gate --write")?;
         edits.write()?;
         true
     } else {

@@ -219,18 +219,29 @@ fn a_revert_puts_back_only_a_recorded_transform_inside_the_tree() {
     let o = Command::new(BIN).args(["--root"]).arg(root).args(["transform", "--spec"]).arg(&s).args(["--preflight", &a.to_string(), "--write", "--out"]).arg(&out).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_ne!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+    let original = std::fs::read(&out).unwrap();
+    // a folder named in place of a record: its records are named by no receipt, and nothing is put back
+    std::fs::write(root.join("evil.json"), forged.to_string()).unwrap();
+    let e = transform::revert(root, root).unwrap_err().to_string();
+    assert!(e.contains("no receipt in the journal names this record"), "{e}");
+    // the real record, edited after its write to name a file the transform never wrote: not the copy kept with it
+    std::fs::write(root.join("src/extra.rs"), "pub fn extra() {}\n").unwrap();
+    let mut edited: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    edited["files"][0] = serde_json::json!({"path": "src/extra.rs", "before": "none", "after": stable_digest::StableDigest::sha256(b"pub fn extra() {}\n").as_str(), "lines": []});
+    std::fs::write(&out, serde_json::to_string_pretty(&edited).unwrap() + "\n").unwrap();
+    let e = transform::revert(root, &out).unwrap_err().to_string();
+    assert!(e.contains("the record is not the one code_passenger kept with its write"), "{e}");
+    assert!(root.join("src/extra.rs").is_file());
     // the same record with a file outside the tree slipped in: refused before anything is put back
-    let mut evil: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut evil: serde_json::Value = serde_json::from_slice(&original).unwrap();
     let victim_now = stable_digest::StableDigest::sha256(b"keep me\n").as_str().to_string();
     evil["files"].as_array_mut().unwrap().push(serde_json::json!({"path": victim.display().to_string(), "before": "none", "after": victim_now, "lines": []}));
     std::fs::write(&out, evil.to_string()).unwrap();
     let e = transform::revert(root, &out).unwrap_err().to_string();
-    assert!(e.contains("which is not a file inside"), "{e}");
+    assert!(e.contains("the record is not the one code_passenger kept with its write"), "{e}");
     assert!(victim.is_file(), "the file outside the tree is untouched");
     // the record as it was written is put back
-    let mut honest = evil.clone();
-    honest["files"].as_array_mut().unwrap().pop();
-    std::fs::write(&out, honest.to_string()).unwrap();
+    std::fs::write(&out, &original).unwrap();
     transform::revert(root, &out).unwrap();
     assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
 }
@@ -263,7 +274,16 @@ fn a_member_crates_own_custodian_folder_governs_it() {
     let s = spec(&lab, SPEC);
     let e = transform::run(&lab, &write_opts(&s, None)).unwrap_err().to_string();
     assert!(e.contains("[CUST0047]"), "{e}");
+    // the root named is the parent workspace: the member's own folder still governs the file the write would touch
+    let e = transform::run(parent.path(), &write_opts(&s, None)).unwrap_err().to_string();
+    assert!(e.contains("[CUST0047]"), "{e}");
     assert_eq!(std::fs::read_to_string(lab.join("src/lib.rs")).unwrap(), LIB);
+    // and an experiment open in the member refuses a line that writes without a change spec, from the parent's root too
+    let folder = lab.join(".custodian/state/jobs/running/exp");
+    std::fs::create_dir_all(&folder).unwrap();
+    custodian_kit::provenance::open(&folder, &lab, "job-exp", &lab).unwrap();
+    let e = code_passenger::commands::edit::dep_add(parent.path(), "lab", "itoa@1", None, &[], false).unwrap_err().to_string();
+    assert!(e.contains("experiment job-exp is open"), "{e}");
 }
 
 /// Audit #7: each change of a batch keeps its record by its spec's name, so two members of one name are refused.
@@ -298,4 +318,40 @@ fn an_open_experiments_tree_is_written_only_by_an_authorized_transform() {
     // with the experiment closed (its folder no longer running), the line is the tool's again
     std::fs::remove_dir_all(&folder).unwrap();
     code_passenger::commands::edit::dep_add(root, "lab", "itoa@1", None, &[], false).unwrap();
+}
+
+/// Outside a governed project too, a revert never reaches outside the tree: a record naming a file by an absolute path
+/// (or one that climbs out) is refused before anything is put back.
+#[test]
+fn a_revert_never_reaches_outside_the_tree() {
+    let dir = workspace(false);
+    let root = dir.path();
+    let s = spec(root, SPEC);
+    let out = root.join("written.json");
+    transform::run(root, &Options { spec: s, write: true, out: Some(out.clone()), ..Options::default() }).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("victim.txt");
+    std::fs::write(&victim, "keep me\n").unwrap();
+    let mut evil: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    evil["files"].as_array_mut().unwrap().push(serde_json::json!({"path": victim.display().to_string(), "before": "none", "after": stable_digest::StableDigest::sha256(b"keep me\n").as_str(), "lines": []}));
+    std::fs::write(&out, evil.to_string()).unwrap();
+    let e = transform::revert(root, &out).unwrap_err().to_string();
+    assert!(e.contains("which is not a file inside"), "{e}");
+    assert!(victim.is_file());
+}
+
+/// The runner's own form, governed: `cd <candidate> && code-passenger --root . transform --spec FILE --preflight N
+/// --write`. The code digest read from `.` is the one the preflight read from the resolved root, so the write goes on
+/// its receipt.
+#[test]
+fn a_governed_write_from_root_dot_goes_on_its_preflight() {
+    let dir = workspace(true);
+    let root = dir.path();
+    let s = spec(root, SPEC);
+    let (a, code) = preflight(root, &s);
+    let out = root.join("written.json");
+    let o = Command::new(BIN).current_dir(root).args(["--root", ".", "transform", "--spec"]).arg(&s).args(["--preflight", &a.to_string(), "--write", "--out"]).arg(&out).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    let r: custodian_kit::transform::TransformRecord = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!((r.preflight_seq, r.code_digest.as_deref(), r.written), (Some(a), Some(code.as_str()), true));
 }

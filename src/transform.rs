@@ -1727,8 +1727,27 @@ fn authorize(store: Option<&custodian_kit::store::Store>, root: &Path, spec: &Ch
 
 /// The project custodian keeps that governs a run: the `.custodian` folder at or above the root as the line gave it
 /// (a member crate's own), else at or above the workspace root cargo names for it.
-fn governing(given: &Path, root: &Path) -> Option<custodian_kit::store::Store> {
-    custodian_kit::store::Store::find(given).or_else(|| custodian_kit::store::Store::find(root))
+fn governing<'a>(given: &Path, root: &Path, files: impl IntoIterator<Item = &'a Path>) -> Option<custodian_kit::store::Store> {
+    use custodian_kit::store::Store;
+    Store::find(given).or_else(|| files.into_iter().find_map(|f| f.parent().and_then(Store::find))).or_else(|| Store::find(root))
+}
+
+/// The files a write would touch, as the tree spells them.
+fn touched(edits: &EditSet) -> Vec<PathBuf> {
+    edits.all().map(|f| f.path.clone()).collect()
+}
+
+/// The name of the copy of a transform's record kept with its after-checkpoint in the passenger's store.
+fn kept_record_name(spec_name: &str) -> String {
+    format!("transform-record-{}.json", custodian_kit::jobs::slug_of(spec_name))
+}
+
+/// Keeps the record's bytes with the checkpoint taken after its write: what a revert in a governed project checks the
+/// record it is given against.
+fn keep_record(store: &crate::passenger::PassengerStore, after: &str, record: &TransformRecord) -> Result<String> {
+    let text = serde_json::to_string_pretty(record)? + "\n";
+    store.write_artifact(&store.read_config()?.passenger_version, after, &kept_record_name(&record.spec_name), text.as_bytes())?;
+    Ok(text)
 }
 
 /// In a governed project a write is a proved one: `--no-cargo` and `--unproven` prove nothing, so they write nothing.
@@ -1743,11 +1762,16 @@ fn proved_writes_only(store: Option<&custodian_kit::store::Store>, opts_write: b
 /// plan, and every file the edits touch holds the bytes they were planned on (or is still absent, for a new file).
 /// Anything that moved during the proof (another writer, a person) refuses the write: what would be written was never
 /// proved.
-fn unmoved(root: &Path, before: Option<&str>, edits: &EditSet) -> Result<()> {
+fn unmoved(root: &Path, before: Option<&str>, tree_before: &BTreeMap<String, String>, edits: &EditSet) -> Result<()> {
     let moved = |why: String| refused(custodian_kit::reading::refusal::ReadingRefusal::ProvedNotWritten.refuse(why));
     let now = code_digest_of(root);
     if before.is_none() || now.as_deref() != before {
         return Err(moved(format!("the code digest was {} before the proof and is {} now", before.unwrap_or("unread"), now.as_deref().unwrap_or("unread"))));
+    }
+    // every file of the tree, not only what the code digest reads: none added, gone or changed since the plan
+    let tree_now = custodian_kit::provenance::tree_files(root).map_err(refused)?;
+    if let Some(d) = custodian_kit::provenance::differences(tree_before, &tree_now).into_iter().next() {
+        return Err(moved(format!("{d} since the change was planned (+ added, - gone, ~ changed)")));
     }
     for f in edits.all() {
         let ok = match std::fs::read_to_string(&f.path) {
@@ -1800,16 +1824,19 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     let root = workspace_root(root)?;
     let spec_path = if opts.spec.is_absolute() { opts.spec.clone() } else { root.join(&opts.spec) };
     let spec = ChangeSpec::from_path(&spec_path).map_err(refused)?;
-    let store = governing(&given, &root);
-    proved_writes_only(store.as_ref(), opts.write, opts.no_cargo, opts.unproven)?;
-    // the code this runs over, digested before anything is planned: the preflight binds it, the write checks it again
+    // the code this runs over, digested before anything is planned: the preflight binds it, the write checks it again;
+    // and every file of the tree, so the write can tell that nothing at all moved
     let code_before = code_digest_of(&root);
-    let preflight_seq = authorize(store.as_ref(), &root, &spec, code_before.as_deref(), opts.preflight, opts.write)?;
+    let tree_before = custodian_kit::provenance::tree_files(&root).map_err(refused)?;
     let k = crate::cargo::builder(&root)?.ignore_parse_errors(true).parse().map_err(|e| PassengerError::Scan { detail: e.to_string() })?;
     let land = change::landing(&k, &root, &spec).map_err(refused)?;
     let mut said = vec![format!("{} {}: lands {}", spec.op().as_str(), spec.name, land.line())];
     let planned = plan(&k, &root, &spec, &land)?;
     let mut edits = planned.tree.edits();
+    // the project custodian keeps that governs the files this would write, and the preflight it goes on, before the proof
+    let store = governing(&given, &root, touched(&edits).iter().map(PathBuf::as_path));
+    proved_writes_only(store.as_ref(), opts.write, opts.no_cargo, opts.unproven)?;
+    let preflight_seq = authorize(store.as_ref(), &root, &spec, code_before.as_deref(), opts.preflight, opts.write)?;
     if edits.is_empty() {
         return Err(refused(format!("{}: nothing to write", spec.name)));
     }
@@ -1991,7 +2018,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             said.push(format!("nothing written: the change is not proved{why}"));
         } else {
             // the tree written is the tree proved: nothing moved since the plan, and the proof's copy holds what is written
-            unmoved(&root, code_before.as_deref(), &edits)?;
+            unmoved(&root, code_before.as_deref(), &tree_before, &edits)?;
             as_proved(&root, &scratch_root, &edits)?;
             let store = crate::passenger::PassengerStore::open_or_init(&root)?;
             let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
@@ -2001,6 +2028,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
             record.checkpoint_after = Some(after.id.clone());
             record.written = true;
             record.code_digest_after = code_digest_of(&root);
+            keep_record(&store, &after.id, &record)?;
             said.push(format!("written: {} files; passenger {} → {}", record.files.len(), before.id, after.id));
         }
     } else {
@@ -2255,7 +2283,7 @@ fn config_words(job: &klepto::CheckJob) -> String {
 pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
     let given = root.to_path_buf();
     let root = workspace_root(root)?;
-    let store = governing(&given, &root);
+    let tree_before = custodian_kit::provenance::tree_files(&root).map_err(refused)?;
     if opts.specs.is_empty() {
         return Err(refused("a batch needs at least one spec"));
     }
@@ -2271,6 +2299,7 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
     if let Some(n) = members.iter().map(|m| m.spec.name.clone()).chain(excluded.iter().map(|e| e.spec.clone())).find(|n| !names.insert(n.clone())) {
         return Err(refused(format!("two members of the batch are named {n}: each change keeps a record by its spec's name, so each needs its own name")));
     }
+    let store = governing(&given, &root, members.iter().flat_map(|m| m.planned.tree.files.keys()).map(PathBuf::as_path));
     let mut preflight_seqs: BTreeMap<String, i64> = BTreeMap::new();
     let mut unauthorized = Vec::new();
     for m in &members {
@@ -2530,7 +2559,7 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
             exit_code = 1;
         } else {
             // the tree written is the tree proved: nothing moved since the plan, and the proof's copy holds what is written
-            unmoved(&root, code_before.as_deref(), &edits)?;
+            unmoved(&root, code_before.as_deref(), &tree_before, &edits)?;
             as_proved(&root, proved_root.as_deref().ok_or_else(|| refused("the batch's proof left no copy to check the write against"))?, &edits)?;
             let store = crate::passenger::PassengerStore::open_or_init(&root)?;
             let before = store.checkpoint_tree(&format!("before a batch of {}", members.len()), None)?;
@@ -2549,6 +2578,7 @@ pub fn run_batch(root: &Path, opts: &BatchOptions) -> Result<BatchOutcome> {
                 r.checkpoint_after = Some(after.id.clone());
                 r.written = true;
                 r.code_digest_after = after_digest.clone();
+                keep_record(&store, &after.id, r)?;
             }
             said.push(format!("written: {} members in {} files; passenger {} → {}", records.len(), placed.files.len(), before.id, after.id));
         }
@@ -2633,21 +2663,44 @@ fn dry_line(proved: bool, record: &TransformRecord, said: &[String]) -> String {
 pub fn revert(root: &Path, record_file: &Path) -> Result<Outcome> {
     let given = root.to_path_buf();
     let root = workspace_root(root)?;
-    // in a project custodian keeps, a revert puts back what a recorded transform wrote: a record no receipt names is
-    // no transform's
-    if let Some(store) = governing(&given, &root) {
-        let want = canon(record_file);
+    // the record files a revert reads: the one named, or each member record of a batch's folder
+    let record_files: Vec<PathBuf> = if record_file.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(record_file)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json") && !p.to_string_lossy().ends_with(".revert.json")).collect();
+        v.sort();
+        v
+    } else {
+        vec![record_file.to_path_buf()]
+    };
+    let named_files: Vec<PathBuf> = record_files
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .filter_map(|t| serde_json::from_str::<TransformRecord>(&t).ok())
+        .flat_map(|r| r.files.into_iter().filter_map(|w| inside(&root, &w.path)))
+        .collect();
+    // in a project custodian keeps, a revert puts back what a recorded transform wrote: each record is named, exactly,
+    // by a receipt in the journal, and is byte for byte the copy code_passenger kept with its write's checkpoint
+    if let Some(store) = governing(&given, &root, named_files.iter().map(PathBuf::as_path)) {
+        let refuse = |why: String| refused(custodian_kit::reading::refusal::ReadingRefusal::WriteUnauthorized.refuse(why));
         let runs = store.journal().map_err(refused)?.runs().map_err(refused)?;
-        let named = runs.iter().any(|r| {
-            r.outputs.iter().any(|o| {
-                let p = Path::new(o);
-                let p = if p.is_absolute() { p.to_path_buf() } else { store.root.join(p) };
-                let c = canon(&p);
-                c == want || c.starts_with(&want)
-            })
-        });
-        if !named {
-            return Err(refused(custodian_kit::reading::refusal::ReadingRefusal::WriteUnauthorized.refuse(format!("{}: no receipt in the journal names this record, so it is no transform's to put back", record_file.display()))));
+        for f in &record_files {
+            let want = canon(f);
+            let named = runs.iter().any(|r| {
+                r.outputs.iter().any(|o| {
+                    let p = Path::new(o);
+                    canon(&if p.is_absolute() { p.to_path_buf() } else { store.root.join(p) }) == want
+                })
+            });
+            if !named {
+                return Err(refuse(format!("{}: no receipt in the journal names this record, so it is no transform's to put back", f.display())));
+            }
+            let passenger = crate::passenger::PassengerStore::open(&root)?;
+            let version = passenger.read_config()?.passenger_version;
+            let text = std::fs::read(f)?;
+            let rec: TransformRecord = serde_json::from_slice(&text)?;
+            let kept = rec.checkpoint_after.as_deref().and_then(|id| passenger.path(&crate::passenger::store::named::ARTIFACT, &[("version", &version), ("id", id), ("name", &kept_record_name(&rec.spec_name))]).ok()).and_then(|p| std::fs::read(p).ok());
+            if kept.as_deref() != Some(text.as_slice()) {
+                return Err(refuse(format!("{}: the record is not the one code_passenger kept with its write (checkpoint {})", f.display(), rec.checkpoint_after.clone().unwrap_or_default())));
+            }
         }
     }
     let (rec, chains, file) = if record_file.is_dir() {
@@ -2891,12 +2944,21 @@ mod tests {
         std::fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"m\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
         std::fs::create_dir_all(root.path().join("src")).unwrap();
         std::fs::write(root.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(root.path().join("src/data.txt"), "read by include_str\n").unwrap();
         let before = code_digest_of(root.path());
+        let tree = custodian_kit::provenance::tree_files(root.path()).unwrap();
         let file = root.path().join("src/lib.rs");
         let edits = EditSet { files: vec![FileEdit { path: file.clone(), before: "pub fn a() {}\n".into(), after: "pub fn a() -> u8 {\n    1\n}\n".into() }], manifest: None };
-        assert!(unmoved(root.path(), before.as_deref(), &edits).is_ok());
+        assert!(unmoved(root.path(), before.as_deref(), &tree, &edits).is_ok());
+        // audit #3, a file gone: one the code digest does not read, removed after the plan
+        std::fs::remove_file(root.path().join("src/data.txt")).unwrap();
+        let e = unmoved(root.path(), before.as_deref(), &tree, &edits).unwrap_err().to_string();
+        assert!(e.contains("[CUST0048]") && e.contains("-src/data.txt since the change was planned"), "{e}");
+        std::fs::write(root.path().join("src/data.txt"), "read by include_str\n").unwrap();
         // the proof's copy: the tree, with the edits on it
         std::fs::write(proved.path().join("Cargo.toml"), std::fs::read(root.path().join("Cargo.toml")).unwrap()).unwrap();
+        std::fs::create_dir_all(proved.path().join("src")).unwrap();
+        std::fs::write(proved.path().join("src/data.txt"), "read by include_str\n").unwrap();
         edits.write_to(root.path(), proved.path()).unwrap();
         assert!(as_proved(root.path(), proved.path(), &edits).is_ok());
         // the proof's copy holds other bytes than would be written
@@ -2912,7 +2974,7 @@ mod tests {
         assert!(as_proved(root.path(), proved.path(), &edits).is_ok(), "the copy has the same build script now");
         // the tree moved after the plan
         std::fs::write(&file, "pub fn a() {}\npub fn b() {}\n").unwrap();
-        let e = unmoved(root.path(), before.as_deref(), &edits).unwrap_err().to_string();
+        let e = unmoved(root.path(), before.as_deref(), &tree, &edits).unwrap_err().to_string();
         assert!(e.contains("[CUST0048]") && e.contains("the code digest was"), "{e}");
     }
 

@@ -95,8 +95,10 @@ impl EditSet {
 /// While a project custodian keeps has an experiment open (a running job with a provenance record), its tree is
 /// written only by `transform` on an authorized preflight: a line that writes without one (`dep add`, `attr place`,
 /// `gate --write`) is refused, and writes nothing.
-pub(crate) fn outside_an_experiment(root: &Path, what: &str) -> Result<()> {
-    match custodian_kit::provenance::running_experiment(root) {
+pub(crate) fn outside_an_experiment(root: &Path, edits: &EditSet, what: &str) -> Result<()> {
+    // the project custodian keeps at or above the root, or at or above any file the edits touch (a member crate's own)
+    let open = custodian_kit::provenance::running_experiment(root).or_else(|| edits.all().find_map(|f| f.path.parent().and_then(custodian_kit::provenance::running_experiment)));
+    match open {
         Some((job, _)) => Err(PassengerError::TransformRefused {
             detail: custodian_kit::reading::refusal::ReadingRefusal::WriteUnauthorized.refuse(format!("{what}: experiment {job} is open, and its tree is written only by transform on an authorized preflight")).to_string(),
         }),
