@@ -1,0 +1,7 @@
+# The crates code_passenger builds against by path (`../<name>`, as Cargo.toml names them), each at the exact commit
+# its tests were run against. `scripts/siblings.sh` puts each one there: CI runs it, and a lone checkout runs it once
+# before `cargo test --locked`. A change across crates moves the commit here in the same change.
+[[sibling]]
+name = "custodian_kit"
+repository = "https://github.com/1o-llc/custodian_kit.git"
+commit = "PINNED_AT_RELEASE"

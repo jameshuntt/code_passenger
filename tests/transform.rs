@@ -308,7 +308,11 @@ value = "one"
     let t = read(root, "shop/src/lib.rs");
     assert!(t.contains("pub fn version() -> u32 {\n    let one = 1;\n    simple_impl::push_if!(&mut Vec::<u32>::new(), one > 0 => one);\n    one\n}\n"), "{t}");
     assert!(read(root, "shop/Cargo.toml").contains("simple_impl = \"0.1.12\""));
-    assert_eq!(o.record.files.len(), 2);
+    // the manifest the toolkit piece changed, and the lock cargo resolved for it in the proof: the tree written is the
+    // tree proved
+    let mut written: Vec<&str> = o.record.files.iter().map(|f| f.path.as_str()).collect();
+    written.sort();
+    assert_eq!(written, ["Cargo.lock", "shop/Cargo.toml", "shop/src/lib.rs"]);
     // the spec's function must be the target's own
     let other = spec(root, "other", "name = \"other\"\nobjective = \"o\"\noperation = \"replace_body\"\ntarget = \"shop::version\"\n\n[function]\nname = \"label\"\n\n[[function.body]]\npiece = \"value\"\nvalue = \"2\"\n");
     assert!(transform::run(root, &Options { spec: other, write: true, ..Options::default() }).is_err());

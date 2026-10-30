@@ -49,6 +49,7 @@ pub const JOB_ENV: &str = "CODE_PASSENGER_JOB";
 #[composite(command = "attr", ty = Attr, init = "action,file,item,line")]
 #[composite(command = "transform", ty = Transform)]
 #[composite(command = "to-toolkit", method = "to_toolkit", ty = ToToolkit, init = "function")]
+#[composite(command = "version", ty = Version)]
 pub struct CodePassenger;
 
 /// `code-passenger --root ROOT WORD...`: a line whose root comes first, as
@@ -386,6 +387,23 @@ pub struct Patterns {
     pub top: Option<OsString>,
     #[arg(flag = "--json")]
     pub json: bool,
+}
+
+/// `version`: the program as it names itself in every record it writes, `code_passenger <version> (custodian_kit
+/// <version>)`: the writer a transform record and an experiment's provenance name.
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "version")]
+#[exit_status(code = 0, word = "said")]
+pub struct Version {
+    /// Read and unused: every line takes a root.
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+}
+
+/// The program's name for itself: what `version` prints and what a transform record keeps as its writer.
+pub fn writer() -> String {
+    format!("code_passenger {} (custodian_kit {})", env!("CARGO_PKG_VERSION"), custodian_kit::VERSION)
 }
 
 /// `init [--root R] [--toml]`: the features document (and its schema where the language server reads it).
@@ -743,6 +761,7 @@ pub enum Line {
     Attr(AttrRooted<CodePassenger>),
     Transform(TransformRooted<CodePassenger>),
     ToToolkit(ToToolkitRooted<CodePassenger>),
+    Version(VersionRooted<CodePassenger>),
 }
 
 macro_rules! each_line {
@@ -766,6 +785,7 @@ macro_rules! each_line {
             Line::Attr($l) => $body,
             Line::Transform($l) => $body,
             Line::ToToolkit($l) => $body,
+            Line::Version($l) => $body,
         }
     };
 }
@@ -791,6 +811,7 @@ impl Line {
             Line::Attr(_) => "attr",
             Line::Transform(_) => "transform",
             Line::ToToolkit(_) => "to-toolkit",
+            Line::Version(_) => "version",
         }
     }
 
@@ -832,6 +853,7 @@ impl Line {
             Line::Attr(l) => Line::Attr(l.root(root)),
             Line::Transform(l) => Line::Transform(l.root(root)),
             Line::ToToolkit(l) => Line::ToToolkit(l.root(root)),
+            Line::Version(l) => Line::Version(l.root(root)),
         }
     }
 }
@@ -867,7 +889,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
         at.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
         return Ok(line.with_root(root));
     }
-    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform, to-toolkit".into() })?;
+    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform, to-toolkit, version".into() })?;
     let line = match *cmd {
         "scan" => {
             let w = Words::read(rest, &["--json"], &["--root", "--src"])?;
@@ -986,6 +1008,13 @@ pub fn read(args: &[OsString]) -> Result<Line> {
                 flag!(l, w, "--json", json);
                 Line::FeatureSites(l)
             }
+        }
+        "version" | "--version" => {
+            let w = Words::read(rest, &[], &["--root"])?;
+            w.positionals(0, "version")?;
+            let mut l = CodePassenger::version();
+            opt!(l, w, "--root", root);
+            Line::Version(l)
         }
         "receipt" => {
             let w = Words::read(rest, &[], &["--root", "--out", "--kg"])?;
@@ -1244,6 +1273,10 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
                 out.push_str(&format!("wrote {}\n", p.display()));
                 outputs.push(p.clone());
             }
+            0
+        }
+        Line::Version(_) => {
+            out.push_str(&format!("{}\n", writer()));
             0
         }
         Line::Lint(l) => {

@@ -31,7 +31,7 @@ impl EditSet {
         self.files.iter().all(|f| f.before == f.after) && self.manifest.as_ref().is_none_or(|m| m.before == m.after)
     }
 
-    fn all(&self) -> impl Iterator<Item = &FileEdit> {
+    pub(crate) fn all(&self) -> impl Iterator<Item = &FileEdit> {
         self.files.iter().chain(self.manifest.iter())
     }
 
