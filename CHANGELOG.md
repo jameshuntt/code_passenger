@@ -1,13 +1,14 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-10-30)
 
-The laboratory-control repair (2026-10-30), on custodian_kit 0.4.0. Round 49's dry run compiled under twelve
-configurations, passed its tests, showed `let mut matching_index = None;` in its diff, and reported that line absent;
-and `transform --write` wrote whatever `--preflight N` said, unchecked. This release proves a change on its copy only,
-writes it only on the preflight that covered it, and writes only the tree it proved. Minor, not patch: a governed
-write now needs its preflight, and lines that wrote freely in a governed project refuse while an experiment is open.
-Nothing is removed. Links are pinned to 6907c7e; the lines they replace to 23c6a46 (0.4.9).
+The laboratory-control repair (2026-10-30), on custodian_kit 0.4.1 (0.4.0's repair; 0.4.1 counts a write made with
+`code-passenger transform --preflight N --write` as the open experiment's change). Round 49's dry run compiled under
+twelve configurations, passed its tests, showed `let mut matching_index = None;` in its diff, and reported that line
+absent; and `transform --write` wrote whatever `--preflight N` said, unchecked. This release proves a change on its
+copy only, writes it only on the preflight that covered it, and writes only the tree it proved. Minor, not patch: a
+governed write now needs its preflight, and lines that wrote freely in a governed project refuse while an experiment
+is open. Nothing is removed. Links are pinned to 6907c7e; the lines they replace to 23c6a46 (0.4.9).
 
 - **A fact is read on the proof's copy only.** `holds` joined a fact's path onto the copy's root
   ([L1650](https://github.com/jameshuntt/code_passenger/blob/23c6a46/src/transform.rs#L1650)); an absolute path (the specimen's, which a root spelled `.` made) replaced it,
@@ -48,7 +49,7 @@ Nothing is removed. Links are pinned to 6907c7e; the lines they replace to 23c6a
   `an_open_experiments_tree_is_written_only_by_an_authorized_transform`.
 - **The knowledge graph's item `target`.** Each workspace item record carries the change spec's target as it is
   ([`with_targets`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/commands/receipt.rs#L19)). Test: `the_knowledge_graphs_target_is_a_change_specs_target_as_it_is`.
-- **`version`** (and `--version`): `code_passenger 0.5.0 (custodian_kit 0.4.0)` ([`writer`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/lines.rs#L405)).
+- **`version`** (and `--version`): `code_passenger 0.5.0 (custodian_kit 0.4.1)` ([`writer`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/lines.rs#L405)).
   Test: `the_version_line_names_the_writer`.
 - **The siblings pinned.** `siblings.toml` names the commit of custodian_kit this tree is tested against;
   `scripts/siblings.sh` puts it at `../custodian_kit` (an existing checkout is checked, never changed). CI runs it in
