@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "code_passenger"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "big-bad-bool",
  "chrono",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "custodian_kit"
-version = "0.3.15"
+version = "0.4.0"
 dependencies = [
  "big-bad-bool",
  "bundles",

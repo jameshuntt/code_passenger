@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+The laboratory-control repair (2026-10-30), on custodian_kit 0.4.0. Round 49's dry run compiled under twelve
+configurations, passed its tests, showed `let mut matching_index = None;` in its diff, and reported that line absent;
+and `transform --write` wrote whatever `--preflight N` said, unchecked. This release proves a change on its copy only,
+writes it only on the preflight that covered it, and writes only the tree it proved. Minor, not patch: a governed
+write now needs its preflight, and lines that wrote freely in a governed project refuse while an experiment is open.
+Nothing is removed. Links are pinned to 6907c7e; the lines they replace to 23c6a46 (0.4.9).
+
+- **A fact is read on the proof's copy only.** `holds` joined a fact's path onto the copy's root
+  ([L1650](https://github.com/jameshuntt/code_passenger/blob/23c6a46/src/transform.rs#L1650)); an absolute path (the specimen's, which a root spelled `.` made) replaced it,
+  so the fact read the specimen. [`inside`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1623) takes a path relative to the copy and inside
+  it, else the fact does not hold. Tests: `replace_bodys_text_fact_is_proved_on_the_proofs_copy_with_the_root_spelled_dot`,
+  `a_fact_naming_a_file_outside_the_proof_copy_never_holds`.
+- **A write goes only on the preflight that covered it.** In a project custodian keeps (found from the root as given,
+  from each file the write touches, then the workspace's: [`governing`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1730)),
+  [`authorize`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1716) asks custodian_kit's `preflight::authorizing` for this exact spec over this
+  exact code, before the proof; the record's `preflight_seq` is the receipt it went on, not the number given
+  ([L1857](https://github.com/jameshuntt/code_passenger/blob/23c6a46/src/transform.rs#L1857)). A named receipt is checked on a dry run too. Outside a governed project nothing
+  is asked, and `--preflight` is refused. `--no-cargo`/`--unproven` write nothing when governed
+  ([`proved_writes_only`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1754)). The batch asks the same for each member, and refuses two members
+  of one name. Tests: `an_authorized_exact_spec_over_exact_code_is_written_and_bound_to_its_preflight`,
+  `an_altered_spec_with_the_old_receipt_is_refused_and_nothing_is_written`, `altered_code_with_the_old_receipt_is_refused_and_nothing_is_written`,
+  `a_governed_write_needs_a_preflight_and_a_dry_run_does_not`, `a_governed_write_is_a_proved_one`,
+  `a_member_crates_own_custodian_folder_governs_it`, `a_batch_of_two_specs_of_one_name_is_refused`,
+  `a_governed_write_from_root_dot_goes_on_its_preflight`.
+- **The tree written is the tree proved.** Before a write, [`unmoved`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1765): the code digest is
+  the one read before the plan, every file of the tree is as it was then (none added, gone or changed), and each edited
+  file holds its planned bytes; [`as_proved`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1791): each written file is the proof copy's, the
+  lock is the one the proof built on, and every other file of the tree (what the code digest leaves out too: a build
+  script, a file `include_str!` reads) is the copy's. The edits were written with no such check
+  ([L1884](https://github.com/jameshuntt/code_passenger/blob/23c6a46/src/transform.rs#L1884), [L2395](https://github.com/jameshuntt/code_passenger/blob/23c6a46/src/transform.rs#L2395)). The record keeps `code_digest` (before the
+  plan), `code_digest_after`, `lock`, `writer`. Test: `a_tree_that_moved_or_a_copy_that_differs_writes_nothing`.
+- **A manifest changed as a side effect carries the proof's lock.** A toolkit piece's dependency, or one removed, changed
+  `Cargo.toml` without the lock cargo resolved for it in the proof ([L1917](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1917)); single and
+  batch. `replace_body_keeps_the_signature_and_docs_and_add_test_lands_in_the_module_named` now lists `Cargo.lock` among
+  the files written.
+- **A revert puts back only a recorded transform inside the tree.** A record's paths were joined onto the root unchecked,
+  so an absolute one reached outside it; now each must be inside it. Governed, each record must be named exactly by a
+  receipt in the journal ([L2694](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L2694)) and be byte for byte the copy code_passenger keeps with its
+  write's checkpoint ([L2702](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L2702), [`keep_record`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/transform.rs#L1747)). Tests:
+  `a_revert_puts_back_only_a_recorded_transform_inside_the_tree`, `a_revert_never_reaches_outside_the_tree`.
+- **An open experiment's tree is written only by an authorized transform.** `dep add`, `attr`, `gate --write` refuse while
+  a running job holds a provenance record, found from the root or from any file they would write
+  ([`outside_an_experiment`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/gate.rs#L98)), and write as before otherwise. Test:
+  `an_open_experiments_tree_is_written_only_by_an_authorized_transform`.
+- **The knowledge graph's item `target`.** Each workspace item record carries the change spec's target as it is
+  ([`with_targets`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/commands/receipt.rs#L19)). Test: `the_knowledge_graphs_target_is_a_change_specs_target_as_it_is`.
+- **`version`** (and `--version`): `code_passenger 0.5.0 (custodian_kit 0.4.0)` ([`writer`](https://github.com/jameshuntt/code_passenger/blob/6907c7e/src/lines.rs#L405)).
+  Test: `the_version_line_names_the_writer`.
+- **The siblings pinned.** `siblings.toml` names the commit of custodian_kit this tree is tested against;
+  `scripts/siblings.sh` puts it at `../custodian_kit` (an existing checkout is checked, never changed). CI runs it in
+  place of cloning the sibling's branch head.
+
+`cargo test --all-features`: 102 passed, 0 failed. `tests/lab_control.rs`: 15.
+
 ## 0.4.9 (2026-10-23)
 
 The whole-workspace swap job ran its batches on 282 crates and found where the batch's proof costs too much or gives
