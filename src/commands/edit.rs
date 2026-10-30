@@ -51,6 +51,7 @@ fn finish(root: &Path, path: PathBuf, before: String, after: String, said: Strin
     let edits = EditSet { files: vec![edit], manifest: None };
     let written = !edits.is_empty();
     if written {
+        crate::gate::outside_an_experiment(root, "a manifest or attribute edit")?;
         edits.write()?;
     }
     Ok(Edited { root: root.to_path_buf(), edits, written, said })
@@ -141,6 +142,7 @@ fn plain_version(item: &toml_edit::Item) -> bool {
 pub fn dep_add(root: &Path, krate: &str, spec: &str, path_dep: Option<&str>, features: &[String], workspace_table: bool) -> Result<Edited> {
     let e = dep_add_plan(root, krate, spec, path_dep, features, workspace_table)?;
     if e.written {
+        crate::gate::outside_an_experiment(root, "dep add")?;
         e.edits.write()?;
     }
     Ok(e)
@@ -513,6 +515,7 @@ pub fn dep_remove(root: &Path, krate: &str, spec: &str, workspace_table: bool) -
     let edits = EditSet { files, manifest: None };
     let written = !edits.is_empty();
     if written {
+        crate::gate::outside_an_experiment(&root, "a manifest or attribute edit")?;
         edits.write()?;
     }
     Ok(Edited { root, edits, written, said })

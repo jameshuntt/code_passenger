@@ -194,3 +194,108 @@ fn the_version_line_names_the_writer() {
         assert!(said.starts_with(&format!("code_passenger {} (custodian_kit ", env!("CARGO_PKG_VERSION"))), "{said}");
     }
 }
+
+/// Audit #1: in a project custodian keeps, a revert puts back only what a recorded transform wrote: a record no receipt
+/// names is refused, and so is one naming a file outside the tree; nothing is written or deleted. A real record (the
+/// program's own receipt names it) is put back.
+#[test]
+fn a_revert_puts_back_only_a_recorded_transform_inside_the_tree() {
+    let dir = workspace(true);
+    let root = dir.path();
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("victim.txt");
+    std::fs::write(&victim, "keep me\n").unwrap();
+    let now = stable_digest::StableDigest::sha256(LIB.as_bytes()).as_str().to_string();
+    let forged = serde_json::json!({"schema": "custodian.transform.v1", "spec_name": "x", "spec": "x.toml", "spec_digest": "d", "operation": "replace_body", "target": "t", "files": [{"path": "src/lib.rs", "before": "none", "after": now, "lines": []}], "checks": [], "postconditions": [], "written": true});
+    let rec = root.join("forged.json");
+    std::fs::write(&rec, forged.to_string()).unwrap();
+    let e = transform::revert(root, &rec).unwrap_err().to_string();
+    assert!(e.contains("no receipt in the journal names this record"), "{e}");
+    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+    // a real write, through the program (its receipt names the record), then its revert
+    let s = spec(root, SPEC);
+    let (a, _) = preflight(root, &s);
+    let out = root.join("written.json");
+    let o = Command::new(BIN).args(["--root"]).arg(root).args(["transform", "--spec"]).arg(&s).args(["--preflight", &a.to_string(), "--write", "--out"]).arg(&out).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_ne!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+    // the same record with a file outside the tree slipped in: refused before anything is put back
+    let mut evil: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let victim_now = stable_digest::StableDigest::sha256(b"keep me\n").as_str().to_string();
+    evil["files"].as_array_mut().unwrap().push(serde_json::json!({"path": victim.display().to_string(), "before": "none", "after": victim_now, "lines": []}));
+    std::fs::write(&out, evil.to_string()).unwrap();
+    let e = transform::revert(root, &out).unwrap_err().to_string();
+    assert!(e.contains("which is not a file inside"), "{e}");
+    assert!(victim.is_file(), "the file outside the tree is untouched");
+    // the record as it was written is put back
+    let mut honest = evil.clone();
+    honest["files"].as_array_mut().unwrap().pop();
+    std::fs::write(&out, honest.to_string()).unwrap();
+    transform::revert(root, &out).unwrap();
+    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+}
+
+/// Audit #2: in a project custodian keeps, `--no-cargo` and `--unproven` prove nothing and write nothing, even on an
+/// authorizing receipt.
+#[test]
+fn a_governed_write_is_a_proved_one() {
+    let dir = workspace(true);
+    let root = dir.path();
+    let s = spec(root, SPEC);
+    let (a, _) = preflight(root, &s);
+    let e = transform::run(root, &Options { spec: s.clone(), write: true, no_cargo: true, unproven: true, preflight: Some(a), ..Options::default() }).unwrap_err().to_string();
+    assert!(e.contains("[CUST0047]") && e.contains("--no-cargo and --unproven write nothing here"), "{e}");
+    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+}
+
+/// Audit #4: a member crate custodian keeps inside a larger cargo workspace is governed: its own `.custodian` is found
+/// from the root the line gives, not only from the workspace root cargo names.
+#[test]
+fn a_member_crates_own_custodian_folder_governs_it() {
+    let parent = tempfile::tempdir().unwrap();
+    std::fs::write(parent.path().join("Cargo.toml"), "[workspace]\nresolver = \"2\"\nmembers = [\"lab\"]\n").unwrap();
+    let lab = parent.path().join("lab");
+    std::fs::create_dir_all(lab.join("src")).unwrap();
+    std::fs::write(lab.join("Cargo.toml"), "[package]\nname = \"lab\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    std::fs::write(lab.join("src/lib.rs"), LIB).unwrap();
+    custodian_kit::exec::lock_crate(parent.path()).unwrap();
+    Store::init(&lab, Mode::Agent).unwrap();
+    let s = spec(&lab, SPEC);
+    let e = transform::run(&lab, &write_opts(&s, None)).unwrap_err().to_string();
+    assert!(e.contains("[CUST0047]"), "{e}");
+    assert_eq!(std::fs::read_to_string(lab.join("src/lib.rs")).unwrap(), LIB);
+}
+
+/// Audit #7: each change of a batch keeps its record by its spec's name, so two members of one name are refused.
+#[test]
+fn a_batch_of_two_specs_of_one_name_is_refused() {
+    let dir = workspace(false);
+    let root = dir.path();
+    let one = root.join("one.toml");
+    let two = root.join("two.toml");
+    std::fs::write(&one, SPEC).unwrap();
+    std::fs::write(&two, SPEC.replace("found = Some(index);", "found = Some(index.min(WORKS));")).unwrap();
+    let e = transform::run_batch(root, &transform::BatchOptions { specs: vec![one, two], write: true, out_dir: None, preflights: Default::default(), after_proof: None, tests: false }).unwrap_err().to_string();
+    assert!(e.contains("two members of the batch are named first-free"), "{e}");
+    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), LIB);
+}
+
+/// While an experiment is open, its tree is written only by `transform` on an authorized preflight: `dep add` (and the
+/// other lines that write without a change spec) write nothing.
+#[test]
+fn an_open_experiments_tree_is_written_only_by_an_authorized_transform() {
+    let dir = workspace(true);
+    let root = dir.path();
+    let specimen = tempfile::tempdir().unwrap();
+    std::fs::write(specimen.path().join("Cargo.toml"), "[package]\nname = \"lab\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    let folder = root.join(".custodian/state/jobs/running/exp");
+    std::fs::create_dir_all(&folder).unwrap();
+    custodian_kit::provenance::open(&folder, root, "job-exp", specimen.path()).unwrap();
+    let before = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let e = code_passenger::commands::edit::dep_add(root, "lab", "itoa@1", None, &[], false).unwrap_err().to_string();
+    assert!(e.contains("[CUST0047]") && e.contains("experiment job-exp is open"), "{e}");
+    assert_eq!(std::fs::read_to_string(root.join("Cargo.toml")).unwrap(), before);
+    // with the experiment closed (its folder no longer running), the line is the tool's again
+    std::fs::remove_dir_all(&folder).unwrap();
+    code_passenger::commands::edit::dep_add(root, "lab", "itoa@1", None, &[], false).unwrap();
+}

@@ -92,6 +92,18 @@ impl EditSet {
     }
 }
 
+/// While a project custodian keeps has an experiment open (a running job with a provenance record), its tree is
+/// written only by `transform` on an authorized preflight: a line that writes without one (`dep add`, `attr place`,
+/// `gate --write`) is refused, and writes nothing.
+pub(crate) fn outside_an_experiment(root: &Path, what: &str) -> Result<()> {
+    match custodian_kit::provenance::running_experiment(root) {
+        Some((job, _)) => Err(PassengerError::TransformRefused {
+            detail: custodian_kit::reading::refusal::ReadingRefusal::WriteUnauthorized.refuse(format!("{what}: experiment {job} is open, and its tree is written only by transform on an authorized preflight")).to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// `path` relative to `root`, trying the root as given and canonicalised.
 pub(crate) fn relative(root: &Path, path: &Path) -> Result<PathBuf> {
     if let Ok(r) = path.strip_prefix(root) {
