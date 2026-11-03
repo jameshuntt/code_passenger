@@ -261,6 +261,22 @@ and after, the lines written, the checks, the postconditions) is kept.
 lines custodian reads at a bounded job's close. a refused spec is `[CP0070]`,
 exit 2.
 
+`replay` (custodian_kit 0.5) edits no code: it carries a state kept
+elsewhere into the tree, whole files of any type, byte for byte. custodian_kit's
+`change::replay_read` (the rule the preflight keeps) reads the whole
+transition first: every path in its one spelling and inside the tree, each
+named once, every file as declared before (its sha256, or absent), every
+payload (beside the spec) the bytes declared after, every mode three octal
+digits; one that does not hold refuses the spec and nothing is written. the
+proof is the transition made on a copy of the files it names, each after state
+(its sha256 and its mode) read back there; no cargo runs. with `--write` the
+tree is checked unmoved and the transition read again, each payload is staged
+beside its place, and only once every one is staged is each put in place and
+each deleted file taken away (a staging that fails takes back what it
+staged); each after state is read back in the tree. the record names exactly
+the files the replay names, in path order. a replay is made alone, never in a
+`--batch`.
+
 ###
 ---
 

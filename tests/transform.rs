@@ -239,7 +239,7 @@ fn move_and_extract_keep_the_old_paths_through_a_re_export() {
 #[test]
 fn every_operation_of_the_vocabulary_has_its_test_here() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let here = ["transform.rs", "transform_more.rs", "manifest_ops.rs"].iter().map(|f| std::fs::read_to_string(dir.join(f)).unwrap()).collect::<String>();
+    let here = ["transform.rs", "transform_more.rs", "manifest_ops.rs", "replay.rs"].iter().map(|f| std::fs::read_to_string(dir.join(f)).unwrap()).collect::<String>();
     for op in custodian_kit::change::Operation::ALL {
         assert!(here.contains(&format!("operation = \\\"{}\\\"", op.as_str())) || here.contains(&format!("operation = \"{}\"", op.as_str())), "no test applies {}", op.as_str());
     }

@@ -648,6 +648,9 @@ fn plan(k: &klepto::Klepto, root: &Path, spec: &ChangeSpec, land: &Landing) -> R
         }
     };
     match spec.op() {
+        // whole files, not edits of the code's text: `transform` runs a replay alone (run_replay), never planned with
+        // other changes, so a batch leaves it out and names why
+        Replay => return Err(refused(format!("{}: a replay is made alone (transform --spec), never in a batch", spec.name))),
         MakeStruct => {
             let i = spec.item.as_ref().ok_or_else(|| refused("make_struct needs item"))?;
             let text = change::render_struct(i).map_err(refused)?;
@@ -1818,12 +1821,232 @@ fn as_proved(root: &Path, proved: &Path, edits: &EditSet) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// `transform --spec S` for a `replay`: an exact transition of whole files, of any type. Nothing is parsed or compiled:
+// custodian_kit's rule (`change::replay_read`, the one the preflight keeps) checks the whole transition (every path,
+// every file as declared before, every payload the bytes declared after) before anything else; the proof is the
+// transition made on a copy of the files it names, each after state read back there; the write is staged beside each
+// file and put in place only once every file is staged, then each after state is read back in the tree.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// Sets a file's permission bits (custodian_kit's `change::mode_of` reads them).
+fn set_mode(path: &Path, bits: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut p = std::fs::metadata(path)?.permissions();
+        p.set_readonly(bits & 0o200 == 0);
+        std::fs::set_permissions(path, p)?;
+    }
+    Ok(())
+}
+
+/// The replay's steps made under `dir`: every payload staged beside its place first (the folders it needs made, its
+/// bytes written, its bits set), then each staged file put in place and each deleted file taken away. A staging that
+/// fails takes back what it staged and the folders it made: nothing under `dir` changed.
+fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> Result<()> {
+    use std::io::Write;
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut made: Vec<PathBuf> = Vec::new();
+    let mut stage = || -> Result<()> {
+        for s in steps {
+            let change::ReplayAct::Write { bytes, mode, .. } = &s.act else { continue };
+            let place = dir.join(&s.path);
+            let (Some(parent), Some(name)) = (place.parent(), place.file_name()) else { return Err(refused(format!("{}: no file name", s.path))) };
+            let mut missing = Vec::new();
+            let mut d = parent.to_path_buf();
+            while !d.exists() {
+                missing.push(d.clone());
+                d = d.parent().map(Path::to_path_buf).ok_or_else(|| refused(format!("{}: no folder holds it", s.path)))?;
+            }
+            for m in missing.into_iter().rev() {
+                std::fs::create_dir(&m)?;
+                made.push(m);
+            }
+            let tmp = parent.join(format!(".{}.replay-{}", name.to_string_lossy(), std::process::id()));
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            staged.push((tmp.clone(), place));
+            f.write_all(bytes)?;
+            f.sync_all()?;
+            set_mode(&tmp, *mode)?;
+        }
+        Ok(())
+    };
+    if let Err(e) = stage() {
+        for (tmp, _) in &staged {
+            let _ = std::fs::remove_file(tmp);
+        }
+        for m in made.iter().rev() {
+            let _ = std::fs::remove_dir(m);
+        }
+        return Err(e);
+    }
+    for (tmp, place) in &staged {
+        std::fs::rename(tmp, place)?;
+    }
+    for s in steps.iter().filter(|s| s.act == change::ReplayAct::Delete) {
+        std::fs::remove_file(dir.join(&s.path))?;
+    }
+    Ok(())
+}
+
+/// Each step's state after, read back under `dir`: the bytes' digest and the permission bits declared, or absent.
+fn replay_after(dir: &Path, steps: &[change::ReplayStep]) -> Vec<(String, bool)> {
+    steps
+        .iter()
+        .map(|s| match (s.after(), s.mode()) {
+            (Some(want), Some(bits)) => {
+                let holds = matches!(change::replay_on_disk(dir, &s.path), Ok(Some((b, m))) if change::sha256_hex(&b) == want && (m == bits || !cfg!(unix)));
+                (format!("replay {}: sha256 {want}, mode {bits:03o}", s.path), holds)
+            }
+            _ => (format!("replay {}: absent", s.path), matches!(change::replay_on_disk(dir, &s.path), Ok(None))),
+        })
+        .collect()
+}
+
+/// `transform` of a `replay` spec at `spec_path` over the workspace at `root`.
+fn run_replay(given: &Path, root: PathBuf, opts: &Options, spec_path: PathBuf, spec: ChangeSpec) -> Result<Outcome> {
+    // the code and the tree before anything: the preflight binds the first, the write checks both again
+    let code_before = code_digest_of(&root);
+    let tree_before = custodian_kit::provenance::tree_files(&root).map_err(refused)?;
+    let spec_dir = spec_path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
+    // the whole transition, read and checked before anything else
+    let read = change::replay_read(&root, &spec_dir, &spec);
+    if !read.holds() {
+        return Err(refused(format!("{}: the replay does not hold, so nothing is written: {}", spec.name, read.failures().join("; "))));
+    }
+    let steps = read.steps;
+    let deleted = steps.iter().filter(|s| s.act == change::ReplayAct::Delete).count();
+    let made = steps.iter().filter(|s| s.before.is_none()).count();
+    let mut said = vec![format!("replay {}: {} files ({} written, {made} of them made; {deleted} deleted); each as declared before, each payload the bytes declared after", spec.name, steps.len(), steps.len() - deleted)];
+    let places: Vec<PathBuf> = steps.iter().map(|s| root.join(&s.path)).collect();
+    let store = governing(given, &root, places.iter().map(PathBuf::as_path));
+    proved_writes_only(store.as_ref(), opts.write, opts.no_cargo, opts.unproven)?;
+    let preflight_seq = authorize(store.as_ref(), &root, &spec, code_before.as_deref(), opts.preflight, opts.write)?;
+    // the proof: the transition made on a copy of the files it names, every after state read back there
+    let proof = tempfile::tempdir()?;
+    for s in steps.iter().filter(|s| s.before.is_some()) {
+        let copy = proof.path().join(&s.path);
+        if let Some(d) = copy.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::copy(root.join(&s.path), &copy)?;
+    }
+    make_replay(proof.path(), &steps)?;
+    let postconditions = replay_after(proof.path(), &steps);
+    let proved = postconditions.iter().all(|(_, h)| *h);
+    said.push(format!("proof: the transition made on a copy of its files; {} of {} after states hold", postconditions.iter().filter(|(_, h)| *h).count(), postconditions.len()));
+    // the record's files in path order, the lines written where both sides are text; the diff a person reads
+    let mut files = Vec::new();
+    let mut edits = EditSet::default();
+    for s in &steps {
+        let before = if s.before.is_some() { Some(std::fs::read(root.join(&s.path))?) } else { None };
+        let after = match &s.act {
+            change::ReplayAct::Write { bytes, .. } => Some(bytes.as_slice()),
+            change::ReplayAct::Delete => None,
+        };
+        let text = |b: Option<&[u8]>| b.map(std::str::from_utf8).transpose().ok().map(|t| t.unwrap_or_default().to_string());
+        let (b, a) = (text(before.as_deref()), text(after));
+        if let (Some(b), Some(a)) = (&b, &a) {
+            edits.files.push(FileEdit { path: root.join(&s.path), before: b.clone(), after: a.clone() });
+        }
+        files.push(FileWrite {
+            path: s.path.clone(),
+            before: s.before.clone().unwrap_or_else(|| "none".into()),
+            after: s.after().map(str::to_string).unwrap_or_else(|| "none".into()),
+            lines: match (b, a, after) {
+                (Some(b), Some(a), Some(_)) => written_lines(&b, &a),
+                _ => Vec::new(),
+            },
+        });
+    }
+    // the lock the transition leaves: the payload's when it writes the root's Cargo.lock, else the tree's
+    let lock = match steps.iter().find(|s| s.path == "Cargo.lock").map(|s| &s.act) {
+        Some(change::ReplayAct::Write { bytes, .. }) => Some(custodian_kit::preflight::LockState { path: "Cargo.lock".into(), digest: custodian_kit::digest::tagged(bytes) }),
+        Some(change::ReplayAct::Delete) => None,
+        None => custodian_kit::preflight::lock_of(&root),
+    };
+    let mut record = TransformRecord {
+        schema: TRANSFORM_SCHEMA.into(),
+        spec_name: spec.name.clone(),
+        spec: relative(&root, &spec_path).map(|r| r.display().to_string()).unwrap_or_else(|_| spec_path.display().to_string()),
+        spec_digest: spec.digest(),
+        operation: Operation::Replay.as_str().into(),
+        target: spec.target.clone(),
+        preflight_seq,
+        code_digest: code_before.clone(),
+        files,
+        checkpoint_before: None,
+        checkpoint_after: None,
+        checks: Vec::new(),
+        postconditions,
+        listed: Vec::new(),
+        generated: Vec::new(),
+        written: false,
+        reverts: None,
+        code_digest_after: None,
+        lock,
+        writer: Some(crate::lines::writer()),
+    };
+    let mut exit_code = if proved { 0 } else { 1 };
+    if opts.write {
+        if !proved {
+            said.push("nothing written: the transition made on the proof's copy does not reach every after state".into());
+        } else {
+            // the tree written is the tree read (INT-2): nothing moved since (the code digest, every file of the tree),
+            // and the transition read again is the one proved, file for file and byte for byte
+            unmoved(&root, code_before.as_deref(), &tree_before, &EditSet::default())?;
+            let again = change::replay_read(&root, &spec_dir, &spec);
+            if !again.holds() || again.steps != steps {
+                let why = again.failures().first().cloned().unwrap_or_else(|| "a payload changed since it was read".into());
+                return Err(refused(custodian_kit::reading::refusal::ReadingRefusal::ProvedNotWritten.refuse(format!("{}: the replay read again is not the one proved: {why}", spec.name))));
+            }
+            let store = crate::passenger::PassengerStore::open_or_init(&root)?;
+            let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
+            make_replay(&root, &steps)?;
+            let after = store.checkpoint_tree(&format!("transform {} (replay)", spec.name), None)?;
+            record.postconditions = replay_after(&root, &steps);
+            record.checkpoint_before = Some(before.id.clone());
+            record.checkpoint_after = Some(after.id.clone());
+            record.written = true;
+            record.code_digest_after = code_digest_of(&root);
+            record.lock = custodian_kit::preflight::lock_of(&root);
+            keep_record(&store, &after.id, &record)?;
+            match record.postconditions.iter().find(|(_, h)| !h) {
+                Some((f, _)) => {
+                    exit_code = 1;
+                    said.push(format!("written, and an after state does not hold in the tree: {f}"));
+                }
+                None => said.push(format!("written: {} files, every after state read back; passenger {} → {}", record.files.len(), before.id, after.id)),
+            }
+        }
+    } else {
+        said.push(dry_line(proved, &record, &said));
+    }
+    let record_file = if record.written || opts.out.is_some() { record_path(&root, opts, &spec) } else { None };
+    if let Some(p) = &record_file {
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(p, serde_json::to_string_pretty(&record)? + "\n")?;
+    }
+    Ok(Outcome { root, record, record_file, edits, exit_code, said })
+}
+
 /// `transform`: the spec planned, proved and (with `write`) written and recorded.
 pub fn run(root: &Path, opts: &Options) -> Result<Outcome> {
     let given = root.to_path_buf();
     let root = workspace_root(root)?;
     let spec_path = if opts.spec.is_absolute() { opts.spec.clone() } else { root.join(&opts.spec) };
     let spec = ChangeSpec::from_path(&spec_path).map_err(refused)?;
+    // a replay edits no code: whole files, checked whole before the first is written (run_replay)
+    if spec.op() == Operation::Replay {
+        return run_replay(&given, root, opts, spec_path, spec);
+    }
     // the code this runs over, digested before anything is planned: the preflight binds it, the write checks it again;
     // and every file of the tree, so the write can tell that nothing at all moved
     let code_before = code_digest_of(&root);
