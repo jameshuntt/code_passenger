@@ -1845,53 +1845,127 @@ fn set_mode(path: &Path, bits: u32) -> Result<()> {
     Ok(())
 }
 
-/// The replay's steps made under `dir`: every payload staged beside its place first (the folders it needs made, its
-/// bytes written, its bits set), then each staged file put in place and each deleted file taken away. A staging that
-/// fails takes back what it staged and the folders it made: nothing under `dir` changed.
-fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> Result<()> {
+/// One thing a replay's write has done, undone in reverse order when a later one fails.
+enum Done {
+    /// A folder made for a file the replay makes.
+    Made(PathBuf),
+    /// A payload staged beside its place.
+    Staged(PathBuf),
+    /// A file to be replaced, kept beside itself (a hard link, else a copy).
+    Kept(PathBuf),
+    /// A file to be deleted, moved aside in its own folder.
+    Aside { place: PathBuf, aside: PathBuf },
+    /// A staged payload put in place, over the file kept beside it (or where none was).
+    Placed { place: PathBuf, kept: Option<PathBuf> },
+}
+
+/// The replay's steps made under `dir`, all of them or none. Staging does everything that can fail while the tree
+/// is still as it was to any reader: the folders a new file needs, each payload written beside its place with its
+/// bits, a hard link (else a copy) of each file to be replaced, each file to be deleted moved aside in its own folder.
+/// Then each payload is put in place. Any failure, staging or placing, undoes everything done so far in reverse
+/// (the kept files put back, the files made taken away, the moved files moved back, the folders made removed), and
+/// the error says what failed and whether the tree is as it was. Only once every file is in place are the kept and
+/// moved files dropped: their names, if one cannot be, come back.
+fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<Vec<String>, String> {
     use std::io::Write;
-    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut made: Vec<PathBuf> = Vec::new();
-    let mut stage = || -> Result<()> {
+    let pid = std::process::id();
+    let beside = |place: &Path, what: &str| -> Option<PathBuf> { Some(place.parent()?.join(format!(".{}.replay-{pid}{what}", place.file_name()?.to_string_lossy()))) };
+    let rel = |p: &Path| p.strip_prefix(dir).unwrap_or(p).display().to_string();
+    let mut done: Vec<Done> = Vec::new();
+    let run = |done: &mut Vec<Done>| -> std::result::Result<(), String> {
+        let fail = |p: &Path, what: &str, e: std::io::Error| format!("{}: {what} failed: {e}", rel(p));
+        let mut placing: Vec<(PathBuf, PathBuf, Option<PathBuf>)> = Vec::new();
         for s in steps {
-            let change::ReplayAct::Write { bytes, mode, .. } = &s.act else { continue };
             let place = dir.join(&s.path);
-            let (Some(parent), Some(name)) = (place.parent(), place.file_name()) else { return Err(refused(format!("{}: no file name", s.path))) };
-            let mut missing = Vec::new();
-            let mut d = parent.to_path_buf();
-            while !d.exists() {
-                missing.push(d.clone());
-                d = d.parent().map(Path::to_path_buf).ok_or_else(|| refused(format!("{}: no folder holds it", s.path)))?;
+            let tmp = beside(&place, "").ok_or_else(|| format!("{}: no file name", s.path))?;
+            match &s.act {
+                change::ReplayAct::Write { bytes, mode, .. } => {
+                    let mut missing = Vec::new();
+                    let mut d = tmp.parent().map(Path::to_path_buf).unwrap_or_default();
+                    while !d.exists() {
+                        missing.push(d.clone());
+                        d = d.parent().map(Path::to_path_buf).ok_or_else(|| format!("{}: no folder holds it", s.path))?;
+                    }
+                    for m in missing.into_iter().rev() {
+                        std::fs::create_dir(&m).map_err(|e| fail(&m, "making the folder", e))?;
+                        done.push(Done::Made(m));
+                    }
+                    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| fail(&tmp, "staging the payload", e))?;
+                    done.push(Done::Staged(tmp.clone()));
+                    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| fail(&tmp, "staging the payload", e))?;
+                    set_mode(&tmp, *mode).map_err(|e| format!("{}: setting its mode failed: {e}", rel(&tmp)))?;
+                    let kept = if s.before.is_some() {
+                        let k = beside(&place, ".kept").ok_or_else(|| format!("{}: no file name", s.path))?;
+                        std::fs::hard_link(&place, &k).or_else(|_| std::fs::copy(&place, &k).map(|_| ())).map_err(|e| fail(&place, "keeping the file before", e))?;
+                        done.push(Done::Kept(k.clone()));
+                        Some(k)
+                    } else {
+                        None
+                    };
+                    placing.push((tmp, place, kept));
+                }
+                change::ReplayAct::Delete => {
+                    let aside = beside(&place, ".gone").ok_or_else(|| format!("{}: no file name", s.path))?;
+                    std::fs::rename(&place, &aside).map_err(|e| fail(&place, "moving the file to delete aside", e))?;
+                    done.push(Done::Aside { place, aside });
+                }
             }
-            for m in missing.into_iter().rev() {
-                std::fs::create_dir(&m)?;
-                made.push(m);
-            }
-            let tmp = parent.join(format!(".{}.replay-{}", name.to_string_lossy(), std::process::id()));
-            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-            staged.push((tmp.clone(), place));
-            f.write_all(bytes)?;
-            f.sync_all()?;
-            set_mode(&tmp, *mode)?;
+        }
+        for (tmp, place, kept) in placing {
+            std::fs::rename(&tmp, &place).map_err(|e| fail(&place, "putting the payload in place", e))?;
+            done.push(Done::Placed { place, kept });
         }
         Ok(())
     };
-    if let Err(e) = stage() {
-        for (tmp, _) in &staged {
-            let _ = std::fs::remove_file(tmp);
+    if let Err(why) = run(&mut done) {
+        // every step undone, the last first; what cannot be is named
+        let mut stuck = Vec::new();
+        for d in done.iter().rev() {
+            let undone = match d {
+                Done::Placed { place, kept: Some(k) } => std::fs::rename(k, place).map_err(|e| format!("{} (its kept copy {}): {e}", rel(place), rel(k))),
+                Done::Placed { place, kept: None } => std::fs::remove_file(place).map_err(|e| format!("{}: {e}", rel(place))),
+                Done::Aside { place, aside } => std::fs::rename(aside, place).map_err(|e| format!("{} (moved to {}): {e}", rel(place), rel(aside))),
+                Done::Kept(k) | Done::Staged(k) => match std::fs::remove_file(k) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", rel(k))),
+                    _ => Ok(()),
+                },
+                Done::Made(m) => std::fs::remove_dir(m).map_err(|e| format!("{}: {e}", rel(m))),
+            };
+            if let Err(e) = undone {
+                stuck.push(e);
+            }
         }
-        for m in made.iter().rev() {
-            let _ = std::fs::remove_dir(m);
+        return Err(if stuck.is_empty() { format!("nothing written, every file is as it was: {why}") } else { format!("written in part, and these could not be put back: {}: {why}", stuck.join("; ")) });
+    }
+    // every file in place: the kept and moved files dropped
+    let mut left = Vec::new();
+    for d in &done {
+        if let Done::Kept(k) | Done::Aside { aside: k, .. } = d
+            && let Err(e) = std::fs::remove_file(k)
+        {
+            left.push(format!("{}: {e}", rel(k)));
         }
-        return Err(e);
     }
-    for (tmp, place) in &staged {
-        std::fs::rename(tmp, place)?;
+    Ok(left)
+}
+
+/// The name of the bits each file a replay replaced or deleted had, kept with its write's after-checkpoint.
+fn kept_modes_name(spec_name: &str) -> String {
+    format!("replay-before-modes-{}.json", custodian_kit::jobs::slug_of(spec_name))
+}
+
+/// Each file the replay replaces or deletes, as it is now: its bytes kept in the passenger's objects (by their
+/// sha256, the digest the record names before), its bits returned by path.
+fn keep_before(store: &crate::passenger::PassengerStore, root: &Path, steps: &[change::ReplayStep]) -> Result<BTreeMap<String, u32>> {
+    let mut modes = BTreeMap::new();
+    for s in steps.iter().filter(|s| s.before.is_some()) {
+        let Some((bytes, bits)) = change::replay_on_disk(root, &s.path).map_err(refused)? else { return Err(refused(format!("{}: gone before it was kept", s.path))) };
+        if Some(store.keep_object(&bytes)?) != s.before {
+            return Err(refused(format!("{}: changed before it was kept", s.path)));
+        }
+        modes.insert(s.path.clone(), bits);
     }
-    for s in steps.iter().filter(|s| s.act == change::ReplayAct::Delete) {
-        std::fs::remove_file(dir.join(&s.path))?;
-    }
-    Ok(())
+    Ok(modes)
 }
 
 /// Each step's state after, read back under `dir`: the bytes' digest and the permission bits declared, or absent.
@@ -1936,7 +2010,7 @@ fn run_replay(given: &Path, root: PathBuf, opts: &Options, spec_path: PathBuf, s
         }
         std::fs::copy(root.join(&s.path), &copy)?;
     }
-    make_replay(proof.path(), &steps)?;
+    make_replay(proof.path(), &steps).map_err(|why| refused(format!("{}: the proof's copy: {why}", spec.name)))?;
     let postconditions = replay_after(proof.path(), &steps);
     let proved = postconditions.iter().all(|(_, h)| *h);
     said.push(format!("proof: the transition made on a copy of its files; {} of {} after states hold", postconditions.iter().filter(|(_, h)| *h).count(), postconditions.len()));
@@ -1997,18 +2071,25 @@ fn run_replay(given: &Path, root: PathBuf, opts: &Options, spec_path: PathBuf, s
         if !proved {
             said.push("nothing written: the transition made on the proof's copy does not reach every after state".into());
         } else {
-            // the tree written is the tree read (INT-2): nothing moved since (the code digest, every file of the tree),
-            // and the transition read again is the one proved, file for file and byte for byte
+            let store = crate::passenger::PassengerStore::open_or_init(&root)?;
+            let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
+            // the tree written is the tree read (INT-2), checked last, just before the files are placed: nothing moved
+            // since (the code digest, every file of the tree), and the transition read again is the one proved, file
+            // for file and byte for byte
             unmoved(&root, code_before.as_deref(), &tree_before, &EditSet::default())?;
             let again = change::replay_read(&root, &spec_dir, &spec);
             if !again.holds() || again.steps != steps {
                 let why = again.failures().first().cloned().unwrap_or_else(|| "a payload changed since it was read".into());
                 return Err(refused(custodian_kit::reading::refusal::ReadingRefusal::ProvedNotWritten.refuse(format!("{}: the replay read again is not the one proved: {why}", spec.name))));
             }
-            let store = crate::passenger::PassengerStore::open_or_init(&root)?;
-            let before = store.checkpoint_tree(&format!("before transform {}", spec.name), None)?;
-            make_replay(&root, &steps)?;
+            // what a revert puts back: each replaced or deleted file's bytes kept as an object, and its bits
+            let modes = keep_before(&store, &root, &steps)?;
+            let left = make_replay(&root, &steps).map_err(|why| refused(format!("{}: {why}", spec.name)))?;
             let after = store.checkpoint_tree(&format!("transform {} (replay)", spec.name), None)?;
+            store.write_artifact(&store.read_config()?.passenger_version, &after.id, &kept_modes_name(&spec.name), (serde_json::to_string_pretty(&modes)? + "\n").as_bytes())?;
+            for l in &left {
+                said.push(format!("written; a kept copy could not be dropped: {l}"));
+            }
             record.postconditions = replay_after(&root, &steps);
             record.checkpoint_before = Some(before.id.clone());
             record.checkpoint_after = Some(after.id.clone());
@@ -2876,6 +2957,81 @@ fn dry_line(proved: bool, record: &TransformRecord, said: &[String]) -> String {
     format!("not proved: {why}; nothing written")
 }
 
+/// `transform --revert RECORD` of a replay's record: the replay made backwards, by the same all-or-nothing write
+/// ([`make_replay`]) and the same placing rule (custodian_kit's `change::replay_place`). Each file the replay wrote
+/// must still be exactly as it left it (its digest after, or absent), else nothing is put back; a file it made is
+/// taken away, a file it replaced or deleted is written again from the bytes kept with its write (the passenger's
+/// objects, by the digest the record names before) with the bits it had then. No cargo runs, as none ran for the
+/// replay; its own record, beside the replay's, holds each file's digest now and after, and each state read back.
+fn revert_replay(root: &Path, record_file: &Path, rec: TransformRecord) -> Result<Outcome> {
+    if !rec.written {
+        return Err(refused(format!("{}: it wrote nothing", record_file.display())));
+    }
+    let store = crate::passenger::PassengerStore::open(root)?;
+    let version = store.read_config()?.passenger_version;
+    let after_id = rec.checkpoint_after.clone().ok_or_else(|| refused(format!("{}: no checkpoint after its write", record_file.display())))?;
+    let modes_file = store.path(&crate::passenger::store::named::ARTIFACT, &[("version", &version), ("id", &after_id), ("name", &kept_modes_name(&rec.spec_name))])?;
+    let modes: BTreeMap<String, u32> = serde_json::from_slice(&std::fs::read(&modes_file).map_err(|e| refused(format!("{}: the bits its files had before are not kept ({}: {e})", record_file.display(), modes_file.display())))?)?;
+    let mut steps = Vec::new();
+    let mut files = Vec::new();
+    for f in &rec.files {
+        let path = change::replay_place(root, &f.path).map_err(|e| refused(format!("the record names {}: {e}", f.path)))?;
+        if path != f.path {
+            return Err(refused(format!("the record names {}, which is not a replay path's one spelling ({path})", f.path)));
+        }
+        let now = change::replay_on_disk(root, &path).map_err(refused)?;
+        let now_digest = now.as_ref().map(|(b, _)| change::sha256_hex(b)).unwrap_or_else(|| "none".into());
+        if now_digest != f.after {
+            return Err(PassengerError::Dirty { detail: format!("{path} changed since the replay wrote it (sha256 {now_digest}, the replay left {}): nothing put back", f.after) });
+        }
+        let act = if f.before == "none" {
+            change::ReplayAct::Delete
+        } else {
+            let bytes = store.object(&f.before).map_err(|e| refused(format!("{path}: its bytes before ({}) are not kept: {e}", f.before)))?;
+            if change::sha256_hex(&bytes) != f.before {
+                return Err(refused(format!("{path}: the bytes kept for it are not sha256 {}", f.before)));
+            }
+            let mode = *modes.get(&path).ok_or_else(|| refused(format!("{path}: its bits before are not kept")))?;
+            change::ReplayAct::Write { bytes, sha256: f.before.clone(), mode }
+        };
+        let text = |b: Option<&[u8]>| b.map(std::str::from_utf8).transpose().ok().map(|t| t.unwrap_or_default().to_string());
+        let lines = match (text(now.as_ref().map(|(b, _)| b.as_slice())), &act) {
+            (Some(n), change::ReplayAct::Write { bytes, .. }) => text(Some(bytes)).map(|a| written_lines(&n, &a)).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        files.push(FileWrite { path: path.clone(), before: now_digest.clone(), after: f.before.clone(), lines });
+        steps.push(change::ReplayStep { path, before: now.map(|(b, _)| change::sha256_hex(&b)), act });
+    }
+    let note = |n: String| crate::passenger::CheckpointOptions { note: Some(n), ..Default::default() };
+    let before = store.checkpoint(None, None, note(format!("before reverting {}", rec.spec_name)))?;
+    let left = make_replay(root, &steps).map_err(|why| refused(format!("reverting {}: {why}", rec.spec_name)))?;
+    let after = store.checkpoint(None, None, note(format!("reverted {}", rec.spec_name)))?;
+    let postconditions = replay_after(root, &steps);
+    let file = record_file.with_file_name(format!("{}.revert.json", record_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+    let out = TransformRecord {
+        files,
+        checkpoint_before: Some(before.id.clone()),
+        checkpoint_after: Some(after.id.clone()),
+        written: true,
+        reverts: Some(relative(root, record_file).map(|r| r.display().to_string()).unwrap_or_else(|_| record_file.display().to_string())),
+        checks: Vec::new(),
+        postconditions,
+        listed: Vec::new(),
+        generated: Vec::new(),
+        code_digest_after: code_digest_of(root),
+        lock: custodian_kit::preflight::lock_of(root),
+        ..rec.clone()
+    };
+    std::fs::write(&file, serde_json::to_string_pretty(&out)? + "\n")?;
+    let held = out.postconditions.iter().all(|(_, h)| *h);
+    let mut said = vec![format!("reverted {}: {} files back as they were, bytes and bits; passenger {} → {}", rec.spec_name, out.files.len(), before.id, after.id)];
+    said.extend(left.iter().map(|l| format!("a kept copy could not be dropped: {l}")));
+    if !held {
+        said.extend(out.postconditions.iter().filter(|(_, h)| !h).map(|(p, _)| format!("does not hold after the revert: {p}")));
+    }
+    Ok(Outcome { root: root.to_path_buf(), record: out, record_file: Some(file), edits: EditSet::default(), exit_code: if held { 0 } else { 1 }, said })
+}
+
 /// `transform --revert RECORD`: every file the record wrote put back as it was, when it is still as the record left
 /// it (a file the transform made is taken away again); the revert's own record beside it. RECORD may be a batch's
 /// folder: its members' records chain within a file (each member's before is the one before it's after), so the batch
@@ -2925,6 +3081,12 @@ pub fn revert(root: &Path, record_file: &Path) -> Result<Outcome> {
                 return Err(refuse(format!("{}: the record is not the one code_passenger kept with its write (checkpoint {})", f.display(), rec.checkpoint_after.clone().unwrap_or_default())));
             }
         }
+    }
+    // a replay's record: the replay made backwards (revert_replay)
+    if !record_file.is_dir()
+        && let Some(rec) = std::fs::read(record_file).ok().and_then(|t| serde_json::from_slice::<TransformRecord>(&t).ok()).filter(|r| r.operation == Operation::Replay.as_str())
+    {
+        return revert_replay(&root, record_file, rec);
     }
     let (rec, chains, file) = if record_file.is_dir() {
         let members = batch_members(record_file)?;
@@ -3138,6 +3300,39 @@ fn rename_crate_paths(text: &str, old: &str, new: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A replay's write is all or none: a payload that cannot be put in place (its place a folder with a file in it)
+    /// after a file was already replaced and another moved aside undoes both, and leaves no staged, kept or moved file.
+    #[test]
+    fn a_placing_that_fails_puts_every_file_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(root.join("a.txt"), "old a").unwrap();
+        std::fs::set_permissions(root.join("a.txt"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::write(root.join("b.txt"), "old b").unwrap();
+        std::fs::create_dir_all(root.join("c")).unwrap();
+        std::fs::write(root.join("c/inside"), "x").unwrap();
+        let write = |path: &str, before: Option<&str>, bytes: &[u8]| change::ReplayStep { path: path.into(), before: before.map(|b| change::sha256_hex(b.as_bytes())), act: change::ReplayAct::Write { bytes: bytes.to_vec(), sha256: change::sha256_hex(bytes), mode: 0o644 } };
+        let steps = vec![write("a.txt", Some("old a"), b"new a"), change::ReplayStep { path: "b.txt".into(), before: Some(change::sha256_hex(b"old b")), act: change::ReplayAct::Delete }, write("c", None, b"new c"), write("d/e.txt", None, b"new e")];
+        let e = make_replay(root, &steps).unwrap_err();
+        assert!(e.starts_with("nothing written, every file is as it was: c: putting the payload in place failed: "), "{e}");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "old a");
+        assert_eq!(std::fs::metadata(root.join("a.txt")).unwrap().permissions().mode() & 0o7777, 0o640);
+        assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "old b");
+        assert_eq!(std::fs::read_to_string(root.join("c/inside")).unwrap(), "x");
+        assert!(!root.join("d").exists(), "the folder made is taken away");
+        let mut names: Vec<String> = walkdir::WalkDir::new(root).min_depth(1).into_iter().map(|e| e.unwrap().path().strip_prefix(root).unwrap().display().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["a.txt", "b.txt", "c", "c/inside"], "no staged, kept or moved file left");
+        // the same steps where every place takes its file: all of them, and nothing beside them
+        std::fs::remove_dir_all(root.join("c")).unwrap();
+        assert!(make_replay(root, &steps).unwrap().is_empty());
+        assert_eq!((std::fs::read_to_string(root.join("a.txt")).unwrap().as_str(), std::fs::read_to_string(root.join("c")).unwrap().as_str(), root.join("b.txt").exists()), ("new a", "new c", false));
+        let mut names: Vec<String> = walkdir::WalkDir::new(root).min_depth(1).into_iter().map(|e| e.unwrap().path().strip_prefix(root).unwrap().display().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["a.txt", "c", "d", "d/e.txt"]);
+    }
 
     /// CP-1: a fact names a file of the tree it is checked on. One that names the specimen's absolute path (what a
     /// root spelled `.` used to make) never holds on the proof's copy, even when the specimen's file has the line.

@@ -46,7 +46,7 @@ fn set_mode(root: &Path, rel: &str, bits: u32) {
 }
 
 fn mode(root: &Path, rel: &str) -> u32 {
-    std::fs::metadata(root.join(rel)).unwrap().permissions().mode() & 0o777
+    std::fs::metadata(root.join(rel)).unwrap().permissions().mode() & 0o7777
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -236,6 +236,10 @@ fn each_way_a_transition_does_not_hold_is_refused_before_anything_is_written() {
     refused("write-delete", vec![ok(), (deletes("src/lib.rs", LIB), None)], "src/lib.rs: named once: named twice (written, then deleted)");
     refused("mode", vec![ok(), (with_mode(writes("run.sh", None, b"n"), "rwxr-xr-x"), Some(b"n"))], "run.sh: its mode: mode `rwxr-xr-x` is not three octal digits");
     refused("governance", vec![ok(), (writes(".passenger/HEAD", None, b"n"), Some(b"n"))], "where the tree digest does not read");
+    // the left-out folders in any case: on a disk that ignores case `.GIT` is `.git`
+    refused("git-case", vec![ok(), (with_mode(writes(".GIT/hooks/post-checkout", None, b"#!/bin/sh\n"), "755"), Some(b"#!/bin/sh\n"))], "where the tree digest does not read");
+    refused("custodian-case", vec![ok(), (writes(".Custodian/state/j.txt", None, b"forged"), Some(b"forged"))], "where the tree digest does not read");
+    refused("target-case", vec![ok(), (writes("Target/x", None, b"forged"), Some(b"forged"))], "where the tree digest does not read");
 }
 
 /// Atomicity: five files, the fifth in path order not as declared before. With --write nothing is written: the first
@@ -307,6 +311,67 @@ fn a_staging_that_fails_takes_back_what_it_staged() {
     now.insert("locked".into(), before["locked"].clone());
     assert_eq!(now, before, "nothing staged is left, no folder made stays");
     assert!(!root.join("a.txt").exists() && !root.join("b").exists());
+}
+
+/// The reviewer's scenario A: a file made, then a file deleted in a folder that cannot be written. The delete is the
+/// step that fails, after the made file was staged: nothing is written, every byte and mode is as it was, no staged or
+/// moved file is left, and the refusal says so.
+#[test]
+fn a_delete_in_a_folder_that_cannot_be_written_writes_nothing_and_says_so() {
+    let d = workspace(false);
+    let root = d.path();
+    put(root, "locked/held.txt", b"held\n");
+    let s = replay("a", vec![(writes("aaa.txt", None, b"new\n"), Some(b"new\n")), (deletes("locked/held.txt", b"held\n"), None)]);
+    std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let before = snapshot(root);
+    let e = transform::run(root, &opts(&s, true)).unwrap_err().to_string();
+    let after = snapshot(root);
+    std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(e.contains("a: nothing written, every file is as it was: locked/held.txt: moving the file to delete aside failed: ") && e.to_lowercase().contains("permission denied"), "{e}");
+    assert_eq!(after, before, "byte for byte, mode for mode, no file left beside another");
+}
+
+/// A replay reverted: each file it made taken away, each file it replaced or deleted written again from the bytes
+/// kept with its write, with the bits it had (set-user-id too); the tree is byte for byte and mode for mode as it was.
+/// A file changed since the replay wrote it puts nothing back.
+#[test]
+fn a_replay_is_reverted_to_the_exact_state_before() {
+    let d = workspace(false);
+    let root = d.path();
+    set_mode(root, "scripts/run.sh", 0o4755);
+    let before = snapshot(root);
+    let after = b"pub fn answer() -> u32 {\n    42\n}\n";
+    let s = replay(
+        "revert",
+        vec![
+            (deletes("notes.txt", b"old notes\n"), None),
+            (deletes("data/table.bin", &[1, 2, 3, 0, 255]), None),
+            (writes("scripts/run.sh", Some(b"#!/bin/sh\necho old\n"), b"#!/bin/sh\necho new\n"), Some(b"#!/bin/sh\necho new\n")),
+            (writes("src/lib.rs", Some(LIB), after), Some(after)),
+            (with_mode(writes("tools/new.sh", None, b"#!/bin/sh\n"), "750"), Some(b"#!/bin/sh\n")),
+        ],
+    );
+    let o = transform::run(root, &Options { out: Some(root.join(".records/revert.json")), ..opts(&s, true) }).unwrap();
+    assert_eq!(o.exit_code, 0, "{}", o.said.join("\n"));
+    assert_eq!(mode(root, "scripts/run.sh"), 0o4755, "a replaced file with no mode keeps its set-user-id bit");
+    assert!(!root.join("notes.txt").exists() && root.join("tools/new.sh").exists());
+    let record = o.record_file.unwrap();
+    // a file changed since the replay wrote it: nothing put back
+    put(root, "tools/new.sh", b"changed");
+    let e = transform::revert(root, &record).unwrap_err().to_string();
+    assert!(e.contains("tools/new.sh changed since the replay wrote it"), "{e}");
+    assert!(!root.join("notes.txt").exists(), "nothing put back");
+    put(root, "tools/new.sh", b"#!/bin/sh\n");
+    set_mode(root, "tools/new.sh", 0o750);
+    let r = transform::revert(root, &record).unwrap();
+    assert_eq!(r.exit_code, 0, "{}", r.said.join("\n"));
+    let mut now = snapshot(root);
+    now.retain(|k, _| !k.starts_with(".records"));
+    // the folder `tools` the replay made stays (a folder is not a file the replay names)
+    now.remove("tools");
+    assert_eq!(now, before, "every byte and every mode as before the replay");
+    assert!(r.record.reverts.is_some() && r.record.postconditions.iter().all(|(_, h)| *h), "{:?}", r.record);
+    assert_eq!(r.record.files.iter().map(|f| (f.path.as_str(), f.after.as_str())).collect::<Vec<_>>()[0], ("data/table.bin", sha(&[1, 2, 3, 0, 255]).as_str()));
 }
 
 // ---------------------------------------------------------------------------

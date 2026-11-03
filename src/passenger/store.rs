@@ -418,6 +418,14 @@ impl PassengerStore {
         self.path(&named::OBJECT, &[("a", &hash[0..2]), ("b", &hash[2..4]), ("hash", hash)])
     }
 
+    /// Keeps `bytes` as an object (a snapshot's blob), whatever file they came from: their digest, by which
+    /// [`Self::object`] reads them back. A replay keeps the bytes of each file it replaces or deletes this way.
+    pub fn keep_object(&self, bytes: &[u8]) -> Result<String> {
+        let hash = sha256_hex(bytes);
+        self.write_object_if_missing(&hash, bytes)?;
+        Ok(hash)
+    }
+
     fn write_object_if_missing(&self, hash: &str, bytes: &[u8]) -> Result<()> {
         let p = self.object_path(hash)?;
         if p.exists() {

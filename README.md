@@ -269,12 +269,18 @@ named once, every file as declared before (its sha256, or absent), every
 payload (beside the spec) the bytes declared after, every mode three octal
 digits; one that does not hold refuses the spec and nothing is written. the
 proof is the transition made on a copy of the files it names, each after state
-(its sha256 and its mode) read back there; no cargo runs. with `--write` the
-tree is checked unmoved and the transition read again, each payload is staged
-beside its place, and only once every one is staged is each put in place and
-each deleted file taken away (a staging that fails takes back what it
-staged); each after state is read back in the tree. the record names exactly
-the files the replay names, in path order. a replay is made alone, never in a
+(its sha256 and its mode) read back there; no cargo runs (a replay reproduces
+a kept state; the experiment's verification judges it). with `--write`, after
+the checkpoint, the tree is checked unmoved and the transition read again;
+each replaced or deleted file's bytes are kept in the passenger's objects and
+its mode beside the write's checkpoint; then everything that can fail is done
+beside the files (each payload staged, each file to replace kept, each file to
+delete moved aside), each payload is put in place, and any failure puts every
+file back as it was and says so; each after state is read back in the tree.
+the record names exactly the files the replay names, in path order.
+`--revert RECORD` of a replay puts back the exact state before (bytes, modes,
+files it made taken away, files it deleted made again), all or nothing, while
+every file is still as the replay left it. a replay is made alone, never in a
 `--batch`.
 
 ###
