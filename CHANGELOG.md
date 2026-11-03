@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.6.0 (2026-11-03)
+
+`replay`, custodian_kit 0.5.0's new operation, made by `transform`: an exact transition of whole files, of any type,
+written only once the whole of it is checked. On custodian_kit 0.5.0, pinned at its release commit (4dc905c). Minor,
+not patch: `Operation` gains a word, so 0.5.0 stays on custodian_kit 0.4.1 (built against a kit with the word, its
+exhaustive `match spec.op()` is `E0004`), and the kit's types in this crate's API (`Outcome::record`,
+`lines::prior_accepted`) are 0.5.0's. Nothing is removed; no AST operation changes. Links are pinned to c694f44
+(18b0ddf for CI).
+
+- **Its own path.** [`run`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L2047) hands a replay spec to
+  [`run_replay`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1912): nothing is scanned, parsed or compiled. The whole transition is read
+  first by the kit's rule, the one the preflight keeps ([L1918](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1918), `change::replay_read`):
+  every path, every file as declared before (its sha256, or absent), every payload the bytes declared after, every
+  mode; one that does not hold refuses the spec (`[CP0070]`, exit 2) and nothing is written, not even a checkpoint.
+- **The governed write's checks, kept.** The preflight of this spec over this code
+  ([`authorize`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1929)), `--no-cargo`/`--unproven` writing nothing when governed, the tree
+  unmoved since the plan ([`unmoved`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L2002): the code digest and every file of the tree). The
+  proof is adapted: no cargo runs (the files may be of any type, and a kept state is reproduced, not judged; the
+  experiment's verification judges it); the transition is made on a copy of the files it names and each after state,
+  bytes and mode, read back there ([L1939](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1939)). In place of `as_proved`, the transition is
+  read again just before the write and must be the one proved, file for file and byte for byte
+  ([L2003](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L2003)).
+- **The write.** [`make_replay`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1851): every payload staged beside its place first (the
+  folders it needs made, its bytes, its bits: [`set_mode`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1833)); a staging that fails takes
+  back what it staged and the folders it made ([L1879](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1879)); only then is each staged file put
+  in place and each deleted file taken away ([L1888](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1888)). Each after state is read back in the
+  tree ([`replay_after`](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L1898), [L2012](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L2012)); one that does not hold is
+  exit 1. Checkpoints before and after, and the record kept with the after one, as for every write.
+- **The record** names exactly the files the replay names, in path order, each digest before and after (`none`:
+  absent), the lines written where both sides are text (so a job's close covers them), and one postcondition per file
+  (`replay <path>: sha256 <after>, mode <bits>`, or `absent`); `operation` `replay`, `target` `*`.
+- **A batch leaves a replay out** and says why ([L653](https://github.com/jameshuntt/code_passenger/blob/c694f44/src/transform.rs#L653)): a replay is made alone.
+- **CI** ([`package`](https://github.com/jameshuntt/code_passenger/blob/18b0ddf/.github/workflows/ci.yml)): the crate as crates.io will hold it, built on every push against
+  crates.io's custodian_kit; while the kit version it names is not published yet (a release made with the kit's) it
+  says so and passes, and `cargo publish` builds the same .crate once the kit is there.
+
+Tests: `tests/replay.rs`: `one_file_is_replaced_byte_for_byte_and_the_record_names_it`,
+`a_mixed_transition_makes_replaces_and_deletes_with_its_modes_and_the_record_names_exactly_those_files` (text,
+bytes, a made executable, 0640, a replaced file's own 0600, a delete), `a_dry_run_proves_the_transition_and_changes_nothing`,
+`each_way_a_transition_does_not_hold_is_refused_before_anything_is_written` (11 refusals, each with and without
+`--write`), `a_five_file_replay_whose_fifth_file_is_not_as_declared_writes_none_of_them`,
+`a_late_payload_that_is_not_the_bytes_declared_writes_nothing`, `a_staging_that_fails_takes_back_what_it_staged`,
+`in_a_governed_project_a_replay_is_written_only_on_the_preflight_of_this_spec_over_this_code`,
+`a_batch_leaves_a_replay_out_and_says_why`, `the_transform_line_runs_a_replay_spec_written_by_hand`;
+`every_operation_of_the_vocabulary_has_its_test_here` reads `tests/replay.rs` too.
+
+`cargo test --all-features`: 112 passed, 0 failed (stable and Rust 1.90); 10 of them in `tests/replay.rs`.
+
 ## 0.5.0 (2026-10-30)
 
 The laboratory-control repair (2026-10-30), on custodian_kit 0.4.1 (0.4.0's repair; 0.4.1 counts a write made with
