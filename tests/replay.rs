@@ -327,7 +327,7 @@ fn a_delete_in_a_folder_that_cannot_be_written_writes_nothing_and_says_so() {
     let e = transform::run(root, &opts(&s, true)).unwrap_err().to_string();
     let after = snapshot(root);
     std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(e.contains("a: nothing written, every file is as it was: locked/held.txt: moving the file to delete aside failed: ") && e.to_lowercase().contains("permission denied"), "{e}");
+    assert!(e.contains("a: nothing written, every file is as it was: locked/held.txt: keeping the file to delete failed: ") && e.to_lowercase().contains("permission denied"), "{e}");
     assert_eq!(after, before, "byte for byte, mode for mode, no file left beside another");
 }
 
@@ -367,11 +367,68 @@ fn a_replay_is_reverted_to_the_exact_state_before() {
     assert_eq!(r.exit_code, 0, "{}", r.said.join("\n"));
     let mut now = snapshot(root);
     now.retain(|k, _| !k.starts_with(".records"));
-    // the folder `tools` the replay made stays (a folder is not a file the replay names)
-    now.remove("tools");
-    assert_eq!(now, before, "every byte and every mode as before the replay");
+    assert_eq!(now, before, "every byte and every mode as before the replay, and the folder it made taken away again");
+    assert!(r.said.iter().any(|l| l.ends_with("taken away: tools")), "{:?}", r.said);
     assert!(r.record.reverts.is_some() && r.record.postconditions.iter().all(|(_, h)| *h), "{:?}", r.record);
     assert_eq!(r.record.files.iter().map(|f| (f.path.as_str(), f.after.as_str())).collect::<Vec<_>>()[0], ("data/table.bin", sha(&[1, 2, 3, 0, 255]).as_str()));
+}
+
+/// Files already at the names the writer would take for itself beside a file (its staged payload, its kept copy, the
+/// copy of a file it deletes) are never written over or taken away: the writer takes the next names, and the files
+/// are byte for byte as they were after the replay. With every name it may take beside a file taken, it refuses
+/// and nothing changes.
+#[test]
+fn files_at_the_writers_own_names_are_never_written_over_or_taken_away() {
+    let d = workspace(false);
+    let root = d.path();
+    let pid = std::process::id();
+    let planted = [format!("src/.lib.rs.replay-{pid}"), format!("src/.lib.rs.replay-{pid}.kept"), format!("src/.lib.rs.replay-{pid}-1.kept"), format!(".notes.txt.replay-{pid}.gone")];
+    for (n, p) in planted.iter().enumerate() {
+        put(root, p, format!("planted {n}").as_bytes());
+    }
+    let after = b"pub fn answer() -> u32 {\n    42\n}\n";
+    let s = replay("own-names", vec![(writes("src/lib.rs", Some(LIB), after), Some(after)), (deletes("notes.txt", b"old notes\n"), None)]);
+    let o = transform::run(root, &opts(&s, true)).unwrap();
+    assert_eq!(o.exit_code, 0, "{}", o.said.join("\n"));
+    assert_eq!(std::fs::read(root.join("src/lib.rs")).unwrap(), after);
+    assert!(!root.join("notes.txt").exists());
+    for (n, p) in planted.iter().enumerate() {
+        assert_eq!(std::fs::read(root.join(p)).unwrap(), format!("planted {n}").as_bytes(), "{p} untouched");
+    }
+    let mut names: Vec<String> = snapshot(root).into_keys().filter(|k| k.contains(".replay-")).collect();
+    names.sort();
+    let mut want = planted.to_vec();
+    want.sort();
+    assert_eq!(names, want, "nothing of the writer's own left beside them");
+    // every name it may take beside a file taken: refused, and nothing changes
+    let d = workspace(false);
+    let root = d.path();
+    for n in 0..16 {
+        let count = if n == 0 { String::new() } else { format!("-{n}") };
+        put(root, &format!(".notes.txt.replay-{pid}{count}.gone"), b"planted");
+    }
+    let before = snapshot(root);
+    let s = replay("own-names-full", vec![(writes("src/lib.rs", Some(LIB), after), Some(after)), (deletes("notes.txt", b"old notes\n"), None)]);
+    let e = transform::run(root, &opts(&s, true)).unwrap_err().to_string();
+    assert!(e.contains("nothing written, every file is as it was: notes.txt: keeping the file to delete failed: sixteen names beside it are taken"), "{e}");
+    assert_eq!(snapshot(root), before);
+}
+
+/// A record whose digest is not a sha256 (edited by hand, cut short) is refused when it would name an object, never a
+/// panic, and nothing is put back.
+#[test]
+fn a_record_with_a_digest_that_is_not_a_sha256_is_refused() {
+    let d = workspace(false);
+    let root = d.path();
+    let s = replay("bad-digest", vec![(deletes("notes.txt", b"old notes\n"), None)]);
+    let o = transform::run(root, &Options { out: Some(root.join(".records/bad.json")), ..opts(&s, true) }).unwrap();
+    let file = o.record_file.unwrap();
+    let mut rec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    rec["files"][0]["before"] = "ab".into();
+    std::fs::write(&file, rec.to_string()).unwrap();
+    let e = transform::revert(root, &file).unwrap_err().to_string();
+    assert!(e.contains("`ab` is not a sha256 digest"), "{e}");
+    assert!(!root.join("notes.txt").exists(), "nothing put back");
 }
 
 // ---------------------------------------------------------------------------

@@ -414,16 +414,13 @@ impl PassengerStore {
         Ok(FileEntry { hash, bytes: bytes.len() as u64, lines: count_lines_bytes(&bytes) as u64, unparsed: None })
     }
 
+    /// An object's place, by its digest: lowercase sha256 hex, 64 digits. Any other text (a record edited by hand,
+    /// a digest cut short) names no object and is refused, never sliced.
     fn object_path(&self, hash: &str) -> Result<PathBuf> {
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err(PassengerError::Path { detail: format!("`{hash}` is not a sha256 digest (64 lowercase hex digits): it names no object") });
+        }
         self.path(&named::OBJECT, &[("a", &hash[0..2]), ("b", &hash[2..4]), ("hash", hash)])
-    }
-
-    /// Keeps `bytes` as an object (a snapshot's blob), whatever file they came from: their digest, by which
-    /// [`Self::object`] reads them back. A replay keeps the bytes of each file it replaces or deletes this way.
-    pub fn keep_object(&self, bytes: &[u8]) -> Result<String> {
-        let hash = sha256_hex(bytes);
-        self.write_object_if_missing(&hash, bytes)?;
-        Ok(hash)
     }
 
     fn write_object_if_missing(&self, hash: &str, bytes: &[u8]) -> Result<()> {
@@ -440,8 +437,8 @@ impl PassengerStore {
         self.read_object(hash)
     }
 
-    /// Keeps a blob no checkpoint holds (a file's text between two members of a batch) and returns its digest, so a
-    /// member's record can be reverted alone.
+    /// Keeps a blob no checkpoint holds (a file's text between two members of a batch; the bytes of a file a replay
+    /// replaces or deletes) and returns its digest, so the record that names it can be reverted alone.
     pub fn keep(&self, bytes: &[u8]) -> Result<String> {
         let hash = sha256_hex(bytes);
         self.write_object_if_missing(&hash, bytes)?;

@@ -1849,27 +1849,66 @@ fn set_mode(path: &Path, bits: u32) -> Result<()> {
 enum Done {
     /// A folder made for a file the replay makes.
     Made(PathBuf),
-    /// A payload staged beside its place.
-    Staged(PathBuf),
-    /// A file to be replaced, kept beside itself (a hard link, else a copy).
-    Kept(PathBuf),
-    /// A file to be deleted, moved aside in its own folder.
-    Aside { place: PathBuf, aside: PathBuf },
+    /// A file of the writer's own, made under a name nothing had: a staged payload, a kept copy of a file to replace,
+    /// a kept copy of a file to delete.
+    Own(PathBuf),
+    /// A file to be deleted, its name taken away (its copy kept at `aside`).
+    Gone { place: PathBuf, aside: PathBuf },
     /// A staged payload put in place, over the file kept beside it (or where none was).
     Placed { place: PathBuf, kept: Option<PathBuf> },
 }
 
+/// What a replay's write made besides the files it names: the folders it made (relative to the root), and any file
+/// of its own it could not take away once every file was in place.
+#[derive(Debug)]
+struct Made {
+    folders: Vec<String>,
+    left: Vec<String>,
+}
+
+/// Makes a file of the writer's own beside `place`, `.<name>.replay-<pid><what>` (then `-1`, `-2`, ... before
+/// `<what>`), never over a file that is there: `make` creates it at the name given and fails with `AlreadyExists`
+/// when the name is taken, and the next name is tried, sixteen at most.
+fn own_beside(place: &Path, what: &str, mut make: impl FnMut(&Path) -> std::io::Result<()>) -> std::io::Result<PathBuf> {
+    let (Some(parent), Some(name)) = (place.parent(), place.file_name()) else { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name")) };
+    for n in 0..16u32 {
+        let count = if n == 0 { String::new() } else { format!("-{n}") };
+        let p = parent.join(format!(".{}.replay-{}{count}{what}", name.to_string_lossy(), std::process::id()));
+        match make(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+            Ok(()) => return Ok(p),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "sixteen names beside it are taken"))
+}
+
+/// A copy of `from` made at `at` only if nothing is there: a hard link, else (where a link cannot be made) its bytes
+/// and its bits in a file created new; a copy that fails is taken away again.
+fn copy_new(from: &Path, at: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(from, at) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+            let mut to = std::fs::OpenOptions::new().write(true).create_new(true).open(at)?;
+            let copied = std::fs::File::open(from).and_then(|mut f| std::io::copy(&mut f, &mut to)).and_then(|_| to.sync_all()).and_then(|_| std::fs::set_permissions(at, std::fs::metadata(from)?.permissions()));
+            if copied.is_err() {
+                let _ = std::fs::remove_file(at);
+            }
+            copied
+        }
+        other => other,
+    }
+}
+
 /// The replay's steps made under `dir`, all of them or none. Staging does everything that can fail while the tree
 /// is still as it was to any reader: the folders a new file needs, each payload written beside its place with its
-/// bits, a hard link (else a copy) of each file to be replaced, each file to be deleted moved aside in its own folder.
-/// Then each payload is put in place. Any failure, staging or placing, undoes everything done so far in reverse
-/// (the kept files put back, the files made taken away, the moved files moved back, the folders made removed), and
-/// the error says what failed and whether the tree is as it was. Only once every file is in place are the kept and
-/// moved files dropped: their names, if one cannot be, come back.
-fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<Vec<String>, String> {
+/// bits, a copy kept of each file to be replaced and of each file to be deleted (whose name is then taken away).
+/// Every file the writer makes for itself is made under a name nothing had ([`own_beside`]): a file already there is
+/// never written over or taken away. Then each payload is put in place. Any failure, staging or placing, undoes
+/// everything done so far in reverse (the kept files put back, the files made taken away, the deleted files made
+/// again, the folders made removed), and the error says what failed and whether the tree is as it was. Only once
+/// every file is in place are the writer's own files taken away; one that cannot be is named in what comes back.
+fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<Made, String> {
     use std::io::Write;
-    let pid = std::process::id();
-    let beside = |place: &Path, what: &str| -> Option<PathBuf> { Some(place.parent()?.join(format!(".{}.replay-{pid}{what}", place.file_name()?.to_string_lossy()))) };
     let rel = |p: &Path| p.strip_prefix(dir).unwrap_or(p).display().to_string();
     let mut done: Vec<Done> = Vec::new();
     let run = |done: &mut Vec<Done>| -> std::result::Result<(), String> {
@@ -1877,11 +1916,10 @@ fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<
         let mut placing: Vec<(PathBuf, PathBuf, Option<PathBuf>)> = Vec::new();
         for s in steps {
             let place = dir.join(&s.path);
-            let tmp = beside(&place, "").ok_or_else(|| format!("{}: no file name", s.path))?;
             match &s.act {
                 change::ReplayAct::Write { bytes, mode, .. } => {
                     let mut missing = Vec::new();
-                    let mut d = tmp.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let mut d = place.parent().map(Path::to_path_buf).unwrap_or_default();
                     while !d.exists() {
                         missing.push(d.clone());
                         d = d.parent().map(Path::to_path_buf).ok_or_else(|| format!("{}: no folder holds it", s.path))?;
@@ -1890,14 +1928,15 @@ fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<
                         std::fs::create_dir(&m).map_err(|e| fail(&m, "making the folder", e))?;
                         done.push(Done::Made(m));
                     }
-                    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| fail(&tmp, "staging the payload", e))?;
-                    done.push(Done::Staged(tmp.clone()));
+                    let mut file = None;
+                    let tmp = own_beside(&place, "", |p| std::fs::OpenOptions::new().write(true).create_new(true).open(p).map(|f| file = Some(f))).map_err(|e| fail(&place, "staging the payload", e))?;
+                    done.push(Done::Own(tmp.clone()));
+                    let mut f = file.ok_or_else(|| format!("{}: staging the payload failed", rel(&tmp)))?;
                     f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| fail(&tmp, "staging the payload", e))?;
                     set_mode(&tmp, *mode).map_err(|e| format!("{}: setting its mode failed: {e}", rel(&tmp)))?;
                     let kept = if s.before.is_some() {
-                        let k = beside(&place, ".kept").ok_or_else(|| format!("{}: no file name", s.path))?;
-                        std::fs::hard_link(&place, &k).or_else(|_| std::fs::copy(&place, &k).map(|_| ())).map_err(|e| fail(&place, "keeping the file before", e))?;
-                        done.push(Done::Kept(k.clone()));
+                        let k = own_beside(&place, ".kept", |p| copy_new(&place, p)).map_err(|e| fail(&place, "keeping the file before", e))?;
+                        done.push(Done::Own(k.clone()));
                         Some(k)
                     } else {
                         None
@@ -1905,9 +1944,10 @@ fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<
                     placing.push((tmp, place, kept));
                 }
                 change::ReplayAct::Delete => {
-                    let aside = beside(&place, ".gone").ok_or_else(|| format!("{}: no file name", s.path))?;
-                    std::fs::rename(&place, &aside).map_err(|e| fail(&place, "moving the file to delete aside", e))?;
-                    done.push(Done::Aside { place, aside });
+                    let aside = own_beside(&place, ".gone", |p| copy_new(&place, p)).map_err(|e| fail(&place, "keeping the file to delete", e))?;
+                    done.push(Done::Own(aside.clone()));
+                    std::fs::remove_file(&place).map_err(|e| fail(&place, "taking the file to delete away", e))?;
+                    done.push(Done::Gone { place, aside });
                 }
             }
         }
@@ -1924,9 +1964,9 @@ fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<
             let undone = match d {
                 Done::Placed { place, kept: Some(k) } => std::fs::rename(k, place).map_err(|e| format!("{} (its kept copy {}): {e}", rel(place), rel(k))),
                 Done::Placed { place, kept: None } => std::fs::remove_file(place).map_err(|e| format!("{}: {e}", rel(place))),
-                Done::Aside { place, aside } => std::fs::rename(aside, place).map_err(|e| format!("{} (moved to {}): {e}", rel(place), rel(aside))),
-                Done::Kept(k) | Done::Staged(k) => match std::fs::remove_file(k) {
-                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", rel(k))),
+                Done::Gone { place, aside } => copy_new(aside, place).map_err(|e| format!("{} (kept as {}): {e}", rel(place), rel(aside))),
+                Done::Own(p) => match std::fs::remove_file(p) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", rel(p))),
                     _ => Ok(()),
                 },
                 Done::Made(m) => std::fs::remove_dir(m).map_err(|e| format!("{}: {e}", rel(m))),
@@ -1937,21 +1977,38 @@ fn make_replay(dir: &Path, steps: &[change::ReplayStep]) -> std::result::Result<
         }
         return Err(if stuck.is_empty() { format!("nothing written, every file is as it was: {why}") } else { format!("written in part, and these could not be put back: {}: {why}", stuck.join("; ")) });
     }
-    // every file in place: the kept and moved files dropped
-    let mut left = Vec::new();
+    // every file in place: the writer's own files taken away (a staged one was placed, so is no longer there)
+    let mut made = Made { folders: Vec::new(), left: Vec::new() };
     for d in &done {
-        if let Done::Kept(k) | Done::Aside { aside: k, .. } = d
-            && let Err(e) = std::fs::remove_file(k)
-        {
-            left.push(format!("{}: {e}", rel(k)));
+        match d {
+            Done::Own(p) => match std::fs::remove_file(p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => made.left.push(format!("{}: {e}", rel(p))),
+                _ => {}
+            },
+            Done::Made(m) => made.folders.push(rel(m).replace('\\', "/")),
+            _ => {}
         }
     }
-    Ok(left)
+    Ok(made)
 }
 
-/// The name of the bits each file a replay replaced or deleted had, kept with its write's after-checkpoint.
+/// What a replay's write keeps beside its after-checkpoint for a revert: the bits each file it replaced or deleted
+/// had, and the folders it made.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct ReplayKept {
+    modes: BTreeMap<String, u32>,
+    folders: Vec<String>,
+}
+
+/// The name of what a replay's write keeps for a revert ([`ReplayKept`]), beside its after-checkpoint.
 fn kept_modes_name(spec_name: &str) -> String {
-    format!("replay-before-modes-{}.json", custodian_kit::jobs::slug_of(spec_name))
+    format!("replay-before-{}.json", custodian_kit::jobs::slug_of(spec_name))
+}
+
+/// A file of the writer's own still in the tree after a write: a postcondition that does not hold, so the record
+/// says it and the run is not done.
+fn left_fact(l: &str) -> (String, bool) {
+    (format!("no file of the writer's own left in the tree: {l}"), false)
 }
 
 /// Each file the replay replaces or deletes, as it is now: its bytes kept in the passenger's objects (by their
@@ -1960,7 +2017,7 @@ fn keep_before(store: &crate::passenger::PassengerStore, root: &Path, steps: &[c
     let mut modes = BTreeMap::new();
     for s in steps.iter().filter(|s| s.before.is_some()) {
         let Some((bytes, bits)) = change::replay_on_disk(root, &s.path).map_err(refused)? else { return Err(refused(format!("{}: gone before it was kept", s.path))) };
-        if Some(store.keep_object(&bytes)?) != s.before {
+        if Some(store.keep(&bytes)?) != s.before {
             return Err(refused(format!("{}: changed before it was kept", s.path)));
         }
         modes.insert(s.path.clone(), bits);
@@ -2084,13 +2141,12 @@ fn run_replay(given: &Path, root: PathBuf, opts: &Options, spec_path: PathBuf, s
             }
             // what a revert puts back: each replaced or deleted file's bytes kept as an object, and its bits
             let modes = keep_before(&store, &root, &steps)?;
-            let left = make_replay(&root, &steps).map_err(|why| refused(format!("{}: {why}", spec.name)))?;
+            let made = make_replay(&root, &steps).map_err(|why| refused(format!("{}: {why}", spec.name)))?;
             let after = store.checkpoint_tree(&format!("transform {} (replay)", spec.name), None)?;
-            store.write_artifact(&store.read_config()?.passenger_version, &after.id, &kept_modes_name(&spec.name), (serde_json::to_string_pretty(&modes)? + "\n").as_bytes())?;
-            for l in &left {
-                said.push(format!("written; a kept copy could not be dropped: {l}"));
-            }
+            let kept = ReplayKept { modes, folders: made.folders };
+            store.write_artifact(&store.read_config()?.passenger_version, &after.id, &kept_modes_name(&spec.name), (serde_json::to_string_pretty(&kept)? + "\n").as_bytes())?;
             record.postconditions = replay_after(&root, &steps);
+            record.postconditions.extend(made.left.iter().map(|l| left_fact(l)));
             record.checkpoint_before = Some(before.id.clone());
             record.checkpoint_after = Some(after.id.clone());
             record.written = true;
@@ -2100,7 +2156,7 @@ fn run_replay(given: &Path, root: PathBuf, opts: &Options, spec_path: PathBuf, s
             match record.postconditions.iter().find(|(_, h)| !h) {
                 Some((f, _)) => {
                     exit_code = 1;
-                    said.push(format!("written, and an after state does not hold in the tree: {f}"));
+                    said.push(format!("written, and this does not hold in the tree: {f}"));
                 }
                 None => said.push(format!("written: {} files, every after state read back; passenger {} → {}", record.files.len(), before.id, after.id)),
             }
@@ -2971,7 +3027,8 @@ fn revert_replay(root: &Path, record_file: &Path, rec: TransformRecord) -> Resul
     let version = store.read_config()?.passenger_version;
     let after_id = rec.checkpoint_after.clone().ok_or_else(|| refused(format!("{}: no checkpoint after its write", record_file.display())))?;
     let modes_file = store.path(&crate::passenger::store::named::ARTIFACT, &[("version", &version), ("id", &after_id), ("name", &kept_modes_name(&rec.spec_name))])?;
-    let modes: BTreeMap<String, u32> = serde_json::from_slice(&std::fs::read(&modes_file).map_err(|e| refused(format!("{}: the bits its files had before are not kept ({}: {e})", record_file.display(), modes_file.display())))?)?;
+    let kept: ReplayKept = serde_json::from_slice(&std::fs::read(&modes_file).map_err(|e| refused(format!("{}: the bits its files had before are not kept ({}: {e})", record_file.display(), modes_file.display())))?)?;
+    let modes = &kept.modes;
     let mut steps = Vec::new();
     let mut files = Vec::new();
     for f in &rec.files {
@@ -3004,9 +3061,20 @@ fn revert_replay(root: &Path, record_file: &Path, rec: TransformRecord) -> Resul
     }
     let note = |n: String| crate::passenger::CheckpointOptions { note: Some(n), ..Default::default() };
     let before = store.checkpoint(None, None, note(format!("before reverting {}", rec.spec_name)))?;
-    let left = make_replay(root, &steps).map_err(|why| refused(format!("reverting {}: {why}", rec.spec_name)))?;
+    let made = make_replay(root, &steps).map_err(|why| refused(format!("reverting {}: {why}", rec.spec_name)))?;
+    // the folders the replay made, taken away when the revert left them empty (deepest first); any other kept
+    let mut folders: Vec<&String> = kept.folders.iter().collect();
+    folders.sort_by_key(|f| std::cmp::Reverse(f.matches('/').count()));
+    let mut removed = Vec::new();
+    for f in folders {
+        let d = root.join(f);
+        if change::replay_place(root, f).is_ok() && std::fs::read_dir(&d).is_ok_and(|mut e| e.next().is_none()) && std::fs::remove_dir(&d).is_ok() {
+            removed.push(f.clone());
+        }
+    }
     let after = store.checkpoint(None, None, note(format!("reverted {}", rec.spec_name)))?;
-    let postconditions = replay_after(root, &steps);
+    let mut postconditions = replay_after(root, &steps);
+    postconditions.extend(made.left.iter().map(|l| left_fact(l)));
     let file = record_file.with_file_name(format!("{}.revert.json", record_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
     let out = TransformRecord {
         files,
@@ -3025,7 +3093,9 @@ fn revert_replay(root: &Path, record_file: &Path, rec: TransformRecord) -> Resul
     std::fs::write(&file, serde_json::to_string_pretty(&out)? + "\n")?;
     let held = out.postconditions.iter().all(|(_, h)| *h);
     let mut said = vec![format!("reverted {}: {} files back as they were, bytes and bits; passenger {} → {}", rec.spec_name, out.files.len(), before.id, after.id)];
-    said.extend(left.iter().map(|l| format!("a kept copy could not be dropped: {l}")));
+    if !removed.is_empty() {
+        said.push(format!("the folders the replay made, empty again, taken away: {}", removed.join(", ")));
+    }
     if !held {
         said.extend(out.postconditions.iter().filter(|(_, h)| !h).map(|(p, _)| format!("does not hold after the revert: {p}")));
     }
@@ -3327,11 +3397,27 @@ mod tests {
         assert_eq!(names, ["a.txt", "b.txt", "c", "c/inside"], "no staged, kept or moved file left");
         // the same steps where every place takes its file: all of them, and nothing beside them
         std::fs::remove_dir_all(root.join("c")).unwrap();
-        assert!(make_replay(root, &steps).unwrap().is_empty());
+        let made = make_replay(root, &steps).unwrap();
+        assert!(made.left.is_empty());
+        assert_eq!(made.folders, ["d"]);
         assert_eq!((std::fs::read_to_string(root.join("a.txt")).unwrap().as_str(), std::fs::read_to_string(root.join("c")).unwrap().as_str(), root.join("b.txt").exists()), ("new a", "new c", false));
         let mut names: Vec<String> = walkdir::WalkDir::new(root).min_depth(1).into_iter().map(|e| e.unwrap().path().strip_prefix(root).unwrap().display().to_string()).collect();
         names.sort();
         assert_eq!(names, ["a.txt", "c", "d", "d/e.txt"]);
+        // a file at the name of a payload's staging, of a kept copy, of a deleted file's copy: never written over
+        let pid = std::process::id();
+        std::fs::write(root.join("b.txt"), "b again").unwrap();
+        let planted = [format!(".a.txt.replay-{pid}"), format!(".a.txt.replay-{pid}.kept"), format!(".b.txt.replay-{pid}.gone")];
+        for p in &planted {
+            std::fs::write(root.join(p), p).unwrap();
+        }
+        let again = vec![write("a.txt", Some("new a"), b"third a"), change::ReplayStep { path: "b.txt".into(), before: Some(change::sha256_hex(b"b again")), act: change::ReplayAct::Delete }];
+        assert!(make_replay(root, &again).unwrap().left.is_empty());
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "third a");
+        assert!(!root.join("b.txt").exists());
+        for p in &planted {
+            assert_eq!(&std::fs::read_to_string(root.join(p)).unwrap(), p, "{p} untouched");
+        }
     }
 
     /// CP-1: a fact names a file of the tree it is checked on. One that names the specimen's absolute path (what a

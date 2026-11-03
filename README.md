@@ -274,14 +274,17 @@ a kept state; the experiment's verification judges it). with `--write`, after
 the checkpoint, the tree is checked unmoved and the transition read again;
 each replaced or deleted file's bytes are kept in the passenger's objects and
 its mode beside the write's checkpoint; then everything that can fail is done
-beside the files (each payload staged, each file to replace kept, each file to
-delete moved aside), each payload is put in place, and any failure puts every
-file back as it was and says so; each after state is read back in the tree.
-the record names exactly the files the replay names, in path order.
-`--revert RECORD` of a replay puts back the exact state before (bytes, modes,
-files it made taken away, files it deleted made again), all or nothing, while
-every file is still as the replay left it. a replay is made alone, never in a
-`--batch`.
+beside the files (each payload staged, a copy kept of each file to replace and
+of each file to delete, which is then taken away), always under names nothing
+had (a file already at one is never written over or taken away), each payload
+is put in place, and any failure puts every file back as it was and says so;
+each after state is read back in the tree, and a file of the writer's own it
+could not take away is a postcondition that does not hold (exit 1). the record
+names exactly the files the replay names, in path order. `--revert RECORD` of
+a replay puts back the exact state before (bytes, modes, files it made taken
+away, files it deleted made again, the folders it made taken away when empty),
+all or nothing, while every file is still as the replay left it. a replay is
+made alone, never in a `--batch`.
 
 ###
 ---
