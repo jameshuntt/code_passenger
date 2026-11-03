@@ -4,16 +4,16 @@
 
 `replay`, custodian_kit 0.5.0's new operation, made by `transform`: an exact transition of whole files, of any type,
 written only once the whole of it is checked, all of it or none, and put back by `--revert`. On custodian_kit 0.5.0,
-pinned at its release commit (8a4649e). Minor, not patch: `Operation` gains a word, so 0.5.0 stays on custodian_kit
+pinned at its release commit (2a54db0). Minor, not patch: `Operation` gains a word, so 0.5.0 stays on custodian_kit
 0.4.1 (built against a kit with the word, its exhaustive `match spec.op()` is `E0004`), and the kit's types in this
 crate's API (`Outcome::record`, `lines::prior_accepted`) are 0.5.0's. Nothing is removed; no AST operation changes.
-Links are pinned to 31c9fcf (eb48944 for CI); a review of the first cut (c694f44) found the write not all or none
-after staging, no way to revert a replay, the left-out folders matched by exact case, and the last checks made before
-the checkpoint: each is fixed below.
+Links are pinned to f1a0b6f (eb48944 for CI). Reviews of the first cut (c694f44) found the write not all or none
+after staging, no way to revert a replay, the left-out folders matched by exact case, the last checks made before the
+checkpoint, and then (31c9fcf) the writer's own names taken over files already there: each is fixed below.
 
-- **Its own path.** [`run`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L2128) hands a replay spec to
-  [`run_replay`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1986): nothing is scanned, parsed or compiled. The whole transition is read
-  first by the kit's rule, the one the preflight keeps ([L1992](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1992), `change::replay_read`):
+- **Its own path.** [`run`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2184) hands a replay spec to
+  [`run_replay`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2043): nothing is scanned, parsed or compiled. The whole transition is read
+  first by the kit's rule, the one the preflight keeps ([L1992](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2049), `change::replay_read`):
   every path placed by `change::replay_place` (not where the tree digest does not read, in any case: `.GIT`,
   `.Custodian`, `Target` too; not where its present part resolves outside the root or into one of them), every file
   as declared before (its sha256, or absent), every payload the bytes declared after, every mode; one that does not
@@ -22,30 +22,38 @@ the checkpoint: each is fixed below.
   `--no-cargo`/`--unproven` writing nothing when governed, the tree unmoved since the plan. The proof is adapted: no
   cargo runs (a replay reproduces a kept state; the experiment's verification judges it); the transition is made on a
   copy of the files it names and each after state, bytes and mode, read back there
-  ([L2013](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L2013)). With `--write`, the checkpoint is taken first
-  ([L2075](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L2075)); then, just before placing, the tree is checked unmoved
-  ([L2079](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L2079)) and the transition read again, which must be the one proved, file for file and
+  ([L2013](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2070)). With `--write`, the checkpoint is taken first
+  ([L2075](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2132)); then, just before placing, the tree is checked unmoved
+  ([L2079](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2136)) and the transition read again, which must be the one proved, file for file and
   byte for byte (in place of `as_proved`).
-- **The write, all or none.** [`make_replay`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1869) does everything that can fail beside the
-  files first: the folders a new file needs, each payload staged with its bits ([`set_mode`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1833)),
-  each file to be replaced kept beside itself (a hard link, else a copy: [L1899](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1899)), each
-  file to be deleted moved aside in its own folder ([L1909](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1909)); then each payload is put in
-  place ([L1914](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1914)). Any failure undoes every step done, the last first
-  ([L1920](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1920)), and says what failed and that every file is as it was (or, if one could not be
-  put back, which); only then are the kept and moved files dropped. In c694f44 the deletes and placements ran one by
-  one after staging, so a delete in a folder that cannot be written left the made file in place and the line said
-  nothing was written. Each after state is read back in the tree ([`replay_after`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1972)).
+- **The write, all or none.** [`make_replay`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1910) does everything that can fail beside the
+  files first: the folders a new file needs, each payload staged with its bits ([`set_mode`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1833)),
+  a copy kept of each file to be replaced and of each file to be deleted (a hard link, else a copy created new:
+  [`copy_new`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1888)), the deleted file's name then taken away; then each payload is put in
+  place ([L1954](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1954)). Any failure undoes every step done, the last first
+  ([L1960](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1960)), and says what failed and that every file is as it was (or, if one could not be
+  put back, which); only then are the writer's own files taken away. Every file the writer makes for itself is made
+  under a name nothing had ([`own_beside`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1872): `.<name>.replay-<pid>`, then `-1` ... `-15`,
+  each created exclusively, else refused while staging), so a file already at one of those names is never written
+  over or taken away; 31c9fcf fell back to a copy over an existing name and renamed over one. In c694f44 the deletes
+  and placements ran one by one after staging. Each after state is read back in the tree
+  ([`replay_after`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2029)); a file of the writer's own it could not take away is a postcondition
+  that does not hold ([`left_fact`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2010), [L2149](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2149)), so the record
+  says it and the line exits 1.
 - **A replay can be reverted.** Before placing, each file it replaces or deletes has its bytes kept in the passenger's
-  objects ([`keep_before`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1959), [`PassengerStore::keep_object`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/passenger/store.rs#L423))
-  and its bits beside the write's checkpoint ([`kept_modes_name`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L1953)); a checkpoint keeps
+  objects ([`keep_before`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L2016), through the store's one [`keep`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/passenger/store.rs#L442))
+  and, beside the write's checkpoint, its bits and the folders the write made ([`ReplayKept`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L1998)); a checkpoint keeps
   only cargo's files, so c694f44's replay could not be put back. `--revert` of a replay's record
-  ([L3089](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L3089), [`revert_replay`](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L2966)) is the replay made backwards by
+  ([L3089](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L3159), [`revert_replay`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L3022)) is the replay made backwards by
   the same all-or-none write and the same placing rule, while every file is exactly as the replay left it: files it
-  made taken away, files it replaced or deleted written again with their bytes and bits. No cargo runs.
+  made taken away, files it replaced or deleted written again with their bytes and bits, and the folders the replay
+  made taken away when empty again ([L3067](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L3067)); any other folder stays. No cargo runs. An
+  object is named only by a sha256 (64 lowercase hex): a record with any other digest is refused, never a panic
+  ([`object_path`](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/passenger/store.rs#L419)).
 - **The record** names exactly the files the replay names, in path order, each digest before and after (`none`:
   absent), the lines written where both sides are text (so a job's close covers them), and one postcondition per file
   (`replay <path>: sha256 <after>, mode <bits>`, or `absent`); `operation` `replay`, `target` `*`.
-- **A batch leaves a replay out** and says why ([L653](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L653)): a replay is made alone.
+- **A batch leaves a replay out** and says why ([L653](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L653)): a replay is made alone.
 - **CI** ([`package`](https://github.com/jameshuntt/code_passenger/blob/eb48944/.github/workflows/ci.yml#L55)): the crate as crates.io will hold it, built on every push
   against crates.io's custodian_kit; while that version of custodian_kit is not published yet (a release made with
   the kit's) it says so and passes, and `cargo publish` builds the same .crate once the kit is there. Package and
@@ -59,13 +67,16 @@ bytes, a made executable, 0640, a replaced file's own 0600, a delete), `a_dry_ru
 `a_five_file_replay_whose_fifth_file_is_not_as_declared_writes_none_of_them`,
 `a_late_payload_that_is_not_the_bytes_declared_writes_nothing`, `a_staging_that_fails_takes_back_what_it_staged`,
 `a_delete_in_a_folder_that_cannot_be_written_writes_nothing_and_says_so`,
-`a_replay_is_reverted_to_the_exact_state_before` (a set-user-id file kept through the write and the revert),
+`a_replay_is_reverted_to_the_exact_state_before` (a set-user-id file kept through the write and the revert, the
+folder it made taken away), `files_at_the_writers_own_names_are_never_written_over_or_taken_away` (files planted at
+the staging, kept and deleted-copy names: untouched; all sixteen names taken: refused, nothing changed),
+`a_record_with_a_digest_that_is_not_a_sha256_is_refused`,
 `in_a_governed_project_a_replay_is_written_only_on_the_preflight_of_this_spec_over_this_code`,
 `a_batch_leaves_a_replay_out_and_says_why`, `the_transform_line_runs_a_replay_spec_written_by_hand`;
-`transform::tests::a_placing_that_fails_puts_every_file_back` ([L3307](https://github.com/jameshuntt/code_passenger/blob/31c9fcf/src/transform.rs#L3307));
+`transform::tests::a_placing_that_fails_puts_every_file_back` (planted names too) ([L3307](https://github.com/jameshuntt/code_passenger/blob/f1a0b6f/src/transform.rs#L3377));
 `every_operation_of_the_vocabulary_has_its_test_here` reads `tests/replay.rs` too.
 
-`cargo test --all-features`: 115 passed, 0 failed (stable and Rust 1.90); 12 of them in `tests/replay.rs`, 1 in
+`cargo test --all-features`: 117 passed, 0 failed (stable and Rust 1.90); 14 of them in `tests/replay.rs`, 1 in
 `transform::tests`.
 
 ## 0.5.0 (2026-10-30)
