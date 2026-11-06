@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+Two things a campaign of kept states needs from its writer. The replay specs of the BFCB ordered history were made
+outside the writer, from pairs of kept trees; `replay make` makes them, through custodian_kit 0.5.1's
+`change::replay_from_trees`, the rule that reads back through `change::replay_read` unchanged. And a runner could not
+tell, before running a spec, whether the code-passenger on its PATH performs the spec's operation: 0.5.0 refuses
+`operation = "replay"` only when the spec reaches it. `version` now says what it performs. On custodian_kit 0.5.1,
+pinned at d930276. Minor, not patch: a new line, and a second line on `version`'s output that a reader of the first
+line alone never sees. Links are pinned to c5c140c.
+
+- **[`replay make`](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L608) `BEFORE AFTER --out DIR [--under P] [--name N] [--objective TEXT]`**, declared as every
+  line is ([L52](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L52): `replay`, its action word `make` checked by [`replay_action`](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L104), as `dep` and
+  `agent` take theirs; read at [L1174](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L1174)), run at [L1353](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L1353): a thin wrapper over the kit. It writes
+  `change.toml` and `payload/` into DIR, which it makes; DIR already there is refused and nothing is written over.
+  The spec is named N, else DIR's own name; its objective names both trees unless given. Anything either tree holds
+  that a replay cannot carry refuses the whole spec, every path named: [`[CP0071]`](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/error.rs#L82), exit 2
+  ([L114](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/error.rs#L114)), nothing written.
+- **`version` says the operations it performs.** Its first line is the writer's name as before
+  ([L1278 before](https://github.com/jameshuntt/code_passenger/blob/430eae7/src/lines.rs#L1278)); its second ([L1350](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L1350)) is `operations: ` and every word of the kit's
+  `Operation` as compiled in ([`operations`](https://github.com/jameshuntt/code_passenger/blob/c5c140c/src/lines.rs#L418)): `transform` matches each one. custodian 0.8.0 reads it
+  before a campaign runs and refuses a code-passenger that lists none, or not the one a spec uses.
+
+Tests: `tests/replay.rs`: `replay_make_writes_the_spec_from_two_trees_and_transform_makes_the_after_tree` (a changed
+file, a new one in a new folder, a deleted one, a mode alone; the spec named by its folder, its objective naming both
+trees, DIR refused when there, then `transform --write` of the spec: the after tree, paths, bytes and modes),
+`replay_make_refuses_what_a_replay_cannot_carry_naming_the_path_and_writes_nothing` (a link and an empty folder named,
+`[CP0071]`, exit 2, no folder made; the line as read: no `--out`, another action, one tree, each refused);
+`tests/lab_control.rs`: `the_version_line_names_the_writer_and_the_operations_it_performs` (two lines, the second
+every word of `Operation`, `replay` among them).
+
+`cargo test --test replay --test lab_control`: 31 passed, 0 failed.
+
 ## 0.6.0 (2026-11-03)
 
 `replay`, custodian_kit 0.5.0's new operation, made by `transform`: an exact transition of whole files, of any type,
