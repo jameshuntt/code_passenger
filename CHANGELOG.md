@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-11-06)
 
 Two things a campaign of kept states needs from its writer. The replay specs of the BFCB ordered history were made
 outside the writer, from pairs of kept trees; `replay make` makes them, through custodian_kit 0.5.1's
