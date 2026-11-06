@@ -286,6 +286,33 @@ away, files it deleted made again, the folders it made taken away when empty),
 all or nothing, while every file is still as the replay left it. a replay is
 made alone, never in a `--batch`.
 
+`replay make` writes the replay spec that takes one kept tree to another
+(custodian_kit's `change::replay_from_trees`, 0.5.1):
+
+```bash
+code-passenger replay make versions/0021/tree versions/0022/tree --out changes/x0020 --under specimen
+code-passenger replay make before/ after/ --out changes/pass2 --name pass2 --objective "PASS1 -> PASS2"
+```
+
+both trees are walked whole. a file with the same bytes and mode in both has
+no entry; a changed one is its digest before and after, its payload and its
+mode (the same bytes with another mode is a change of mode alone); a new one is
+absent before; a removed one is deleted. each path is `--under`'s folder then
+its path in its tree; each payload is `payload/` that path, beside
+`change.toml`, in the folder `--out` names, which the line makes (one already
+there is refused: nothing is ever written over). the spec is named `--name`,
+else by that folder; its objective names both trees unless `--objective` says
+it. anything a replay cannot carry (a symbolic link, a file that is not a
+regular file, an empty folder, a path the tree digest does not read, set-id or
+sticky bits, two files one where case is ignored, a file become a folder)
+refuses the whole spec, every path named, `[CP0071]`, exit 2, and nothing is
+written.
+
+`code-passenger version` prints the writer's name on its first line and, on its
+second, `operations: ...`, every operation of the change vocabulary it performs
+(custodian_kit's `Operation`, as compiled in): what custodian reads before it
+runs a spec through this program.
+
 ###
 ---
 

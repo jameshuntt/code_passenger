@@ -49,6 +49,7 @@ pub const JOB_ENV: &str = "CODE_PASSENGER_JOB";
 #[composite(command = "attr", ty = Attr, init = "action,file,item,line")]
 #[composite(command = "transform", ty = Transform)]
 #[composite(command = "to-toolkit", method = "to_toolkit", ty = ToToolkit, init = "function")]
+#[composite(command = "replay", ty = Replay, init = "action,before,after,out")]
 #[composite(command = "version", ty = Version)]
 pub struct CodePassenger;
 
@@ -98,6 +99,10 @@ fn dep_action(field: &str, word: &OsStr) -> CommandValidationResult {
 
 fn attr_action(field: &str, word: &OsStr) -> CommandValidationResult {
     word_of(field, word, &["place", "remove"])
+}
+
+fn replay_action(field: &str, word: &OsStr) -> CommandValidationResult {
+    word_of(field, word, &["make"])
 }
 
 fn header_plan(field: &str, word: &OsStr) -> CommandValidationResult {
@@ -390,7 +395,8 @@ pub struct Patterns {
 }
 
 /// `version`: the program as it names itself in every record it writes, `code_passenger <version> (custodian_kit
-/// <version>)`: the writer a transform record and an experiment's provenance name.
+/// <version>)`: the writer a transform record and an experiment's provenance name; then the operations it performs,
+/// `operations: <word> ...` ([`operations`]).
 #[derive(SimpleSubCommand, Debug, Clone, Default)]
 #[subcommand(segment = "version")]
 #[exit_status(code = 0, word = "said")]
@@ -404,6 +410,13 @@ pub struct Version {
 /// The program's name for itself: what `version` prints and what a transform record keeps as its writer.
 pub fn writer() -> String {
     format!("code_passenger {} (custodian_kit {})", env!("CARGO_PKG_VERSION"), custodian_kit::VERSION)
+}
+
+/// The operations of a change spec this program performs: every word of custodian_kit's `Operation` as it is compiled
+/// in (`transform` matches each one). `version` prints them on its second line, `operations: <word> ...`, so a
+/// runner can tell before it runs a spec whether this writer performs its operation.
+pub fn operations() -> Vec<&'static str> {
+    custodian_kit::change::Operation::ALL.iter().map(|o| o.as_str()).collect()
 }
 
 /// `init [--root R] [--toml]`: the features document (and its schema where the language server reads it).
@@ -582,6 +595,44 @@ pub struct ToToolkit {
     pub out: Option<OsString>,
 }
 
+/// `replay make BEFORE AFTER --out DIR [--under P] [--name N] [--objective TEXT] [--root R]`: the `replay` change spec
+/// that takes the tree BEFORE to the tree AFTER (custodian_kit's `change::replay_from_trees`), each path `P/` its path
+/// in its tree, written with its payloads into DIR, a folder it makes and never one already there. Refused whole,
+/// naming every path, when either tree holds what a replay cannot carry. The spec is named N (DIR's own name when not
+/// given); its objective names both trees when not given.
+#[allow(clippy::duplicated_attributes)]
+#[derive(SimpleSubCommand, Debug, Clone, Default)]
+#[subcommand(segment = "replay")]
+#[exit_status(code = 0, word = "written")]
+#[exit_status(code = 2, word = "refused: nothing written")]
+pub struct Replay {
+    /// Read and unused: every line takes a root.
+    #[builder(into)]
+    #[arg(kv = "--root")]
+    pub root: Option<OsString>,
+    #[builder(init_required, into)]
+    #[arg(positional, each = replay_action)]
+    pub action: OsString,
+    #[builder(init_required, into)]
+    #[arg(positional, each = nonempty)]
+    pub before: OsString,
+    #[builder(init_required, into)]
+    #[arg(positional, each = nonempty)]
+    pub after: OsString,
+    #[builder(init_required, into)]
+    #[arg(kv = "--out", each = nonempty)]
+    pub out: OsString,
+    #[builder(into)]
+    #[arg(kv = "--under")]
+    pub under: Option<OsString>,
+    #[builder(into)]
+    #[arg(kv = "--name")]
+    pub name: Option<OsString>,
+    #[builder(into)]
+    #[arg(kv = "--objective")]
+    pub objective: Option<OsString>,
+}
+
 fn transform_valid(line: &Transform) -> CommandValidationResult {
     match [line.spec.is_some(), line.revert.is_some(), line.batch.is_some()].iter().filter(|x| **x).count() {
         0 => Err(CommandValidationError::structural("transform needs --spec, --batch or --revert").with_field("spec")),
@@ -685,6 +736,7 @@ leaves! {
     Attr => AttrRooted,
     Transform => TransformRooted,
     ToToolkit => ToToolkitRooted,
+    Replay => ReplayRooted,
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +813,7 @@ pub enum Line {
     Attr(AttrRooted<CodePassenger>),
     Transform(TransformRooted<CodePassenger>),
     ToToolkit(ToToolkitRooted<CodePassenger>),
+    Replay(ReplayRooted<CodePassenger>),
     Version(VersionRooted<CodePassenger>),
 }
 
@@ -785,6 +838,7 @@ macro_rules! each_line {
             Line::Attr($l) => $body,
             Line::Transform($l) => $body,
             Line::ToToolkit($l) => $body,
+            Line::Replay($l) => $body,
             Line::Version($l) => $body,
         }
     };
@@ -811,6 +865,7 @@ impl Line {
             Line::Attr(_) => "attr",
             Line::Transform(_) => "transform",
             Line::ToToolkit(_) => "to-toolkit",
+            Line::Replay(_) => "replay",
             Line::Version(_) => "version",
         }
     }
@@ -853,6 +908,7 @@ impl Line {
             Line::Attr(l) => Line::Attr(l.root(root)),
             Line::Transform(l) => Line::Transform(l.root(root)),
             Line::ToToolkit(l) => Line::ToToolkit(l.root(root)),
+            Line::Replay(l) => Line::Replay(l.root(root)),
             Line::Version(l) => Line::Version(l.root(root)),
         }
     }
@@ -889,7 +945,7 @@ pub fn read(args: &[OsString]) -> Result<Line> {
         at.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
         return Ok(line.with_root(root));
     }
-    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform, to-toolkit, version".into() })?;
+    let (cmd, rest) = words.split_first().ok_or_else(|| PassengerError::Line { detail: "no command; the commands are scan, annotate, scaffold, passenger, gate, features, feature-map, feature-sites, feature-probe, receipt, lint, patterns, init, agent, dep, attr, transform, to-toolkit, replay, version".into() })?;
     let line = match *cmd {
         "scan" => {
             let w = Words::read(rest, &["--json"], &["--root", "--src"])?;
@@ -1115,6 +1171,20 @@ pub fn read(args: &[OsString]) -> Result<Line> {
             opt!(l, w, "--out", out);
             Line::ToToolkit(l)
         }
+        "replay" => {
+            let w = Words::read(rest, &[], &["--root", "--out", "--under", "--name", "--objective"])?;
+            let p = w.positionals(3, "replay make BEFORE AFTER")?;
+            let [action, before, after] = p.as_slice() else {
+                return Err(PassengerError::Line { detail: "replay make BEFORE AFTER --out DIR".into() });
+            };
+            let out = w.kv("--out").ok_or_else(|| PassengerError::Line { detail: format!("replay {action} needs --out") })?;
+            let mut l = CodePassenger::replay(action.as_str(), before.as_str(), after.as_str(), out);
+            opt!(l, w, "--root", root);
+            opt!(l, w, "--under", under);
+            opt!(l, w, "--name", name);
+            opt!(l, w, "--objective", objective);
+            Line::Replay(l)
+        }
         other => return Err(PassengerError::Line { detail: format!("`{other}` is not a command") }),
     };
     line.validate().map_err(|e| PassengerError::Line { detail: e.to_string() })?;
@@ -1277,6 +1347,33 @@ fn dispatch(line: &Line, exe: &Path) -> Result<(i32, String, Vec<PathBuf>)> {
         }
         Line::Version(_) => {
             out.push_str(&format!("{}\n", writer()));
+            out.push_str(&format!("operations: {}\n", operations().join(" ")));
+            0
+        }
+        Line::Replay(l) => {
+            let l = l.leaf();
+            let (before, after, dir) = (PathBuf::from(&l.before), PathBuf::from(&l.after), PathBuf::from(&l.out));
+            let refused = |detail: String| PassengerError::ReplayRefused { detail };
+            let name = match os(&l.name) {
+                Some(n) => n,
+                None => dir.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| refused(format!("{}: no file name to name the spec by (--name)", dir.display())))?,
+            };
+            let objective = os(&l.objective).unwrap_or_else(|| format!("the tree {} made the tree {}", before.display(), after.display()));
+            let made = custodian_kit::change::replay_from_trees(&before, &after, os(&l.under).as_deref()).map_err(refused)?;
+            let file = made.write(&dir, &name, &objective).map_err(refused)?;
+            let count = |f: fn(&custodian_kit::change::ReplayFile) -> bool| made.files.iter().filter(|x| f(x)).count();
+            let (new, deleted, mode) = (count(|f| f.absent_before), count(|f| f.delete), count(|f| f.before_sha256.is_some() && f.before_sha256 == f.after_sha256));
+            out.push_str(&format!(
+                "replay {name}: {} files ({new} made, {} replaced, {mode} of them in mode alone, {deleted} deleted), from {} to {}\nwrote {} and {} payloads\n",
+                made.files.len(),
+                made.files.len() - new - deleted,
+                before.display(),
+                after.display(),
+                file.display(),
+                made.payloads.len()
+            ));
+            outputs.push(file);
+            outputs.extend(made.payloads.keys().map(|p| dir.join(p)));
             0
         }
         Line::Lint(l) => {

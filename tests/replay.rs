@@ -529,3 +529,83 @@ fn the_transform_line_runs_a_replay_spec_written_by_hand() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("scripts/run.sh: as declared before: sha256 "), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(snapshot(root), after);
 }
+
+// ---------------------------------------------------------------------------
+// `replay make BEFORE AFTER --out DIR`: the spec from two trees
+
+const BIN: &str = env!("CARGO_BIN_EXE_code-passenger");
+
+/// A copy of the tree at `from` (the passenger's and custodian's stores aside), modes kept.
+fn copy_tree(from: &Path, to: &Path) {
+    for e in walkdir::WalkDir::new(from).min_depth(1).into_iter().filter_entry(|e| ![".passenger", ".custodian", "target"].contains(&e.file_name().to_string_lossy().as_ref())) {
+        let e = e.unwrap();
+        if e.file_type().is_file() {
+            let rel = e.path().strip_prefix(from).unwrap().to_string_lossy().into_owned();
+            put(to, &rel, &std::fs::read(e.path()).unwrap());
+            set_mode(to, &rel, mode(from, &rel));
+        }
+    }
+}
+
+fn make(args: &[&std::ffi::OsStr]) -> std::process::Output {
+    std::process::Command::new(BIN).arg("replay").arg("make").args(args).output().unwrap()
+}
+
+#[test]
+fn replay_make_writes_the_spec_from_two_trees_and_transform_makes_the_after_tree() {
+    let d = workspace(false);
+    let root = d.path();
+    let after = tempfile::tempdir().unwrap();
+    copy_tree(root, after.path());
+    put(after.path(), "src/lib.rs", b"pub fn answer() -> u32 {\n    42\n}\n");
+    set_mode(after.path(), "scripts/run.sh", 0o700);
+    std::fs::remove_file(after.path().join("notes.txt")).unwrap();
+    put(after.path(), "docs/new.md", b"# new\n");
+    let specs = tempfile::tempdir().unwrap();
+    let dir = specs.path().join("pass2");
+    let o = make(&[root.as_os_str(), after.path().as_os_str(), "--out".as_ref(), dir.as_os_str()]);
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{said}{}", String::from_utf8_lossy(&o.stderr));
+    assert!(said.contains("replay pass2: 4 files (1 made, 2 replaced, 1 of them in mode alone, 1 deleted)"), "{said}");
+    let spec = ChangeSpec::from_path(&dir.join("change.toml")).unwrap();
+    assert_eq!(spec.name, "pass2", "the spec is named by its folder");
+    assert!(spec.objective.contains(&root.display().to_string()) && spec.objective.contains(&after.path().display().to_string()), "{}", spec.objective);
+    let mode_alone = spec.replay.iter().find(|f| f.path == "scripts/run.sh").unwrap();
+    assert_eq!((mode_alone.before_sha256.as_deref(), mode_alone.mode.as_deref()), (mode_alone.after_sha256.as_deref(), Some("700")));
+    // a folder already there is never written over
+    let o = make(&[root.as_os_str(), after.path().as_os_str(), "--out".as_ref(), dir.as_os_str(), "--name".as_ref(), "other".as_ref()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("CP0071") && String::from_utf8_lossy(&o.stderr).contains("already there"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(ChangeSpec::from_path(&dir.join("change.toml")).unwrap(), spec);
+    // transform makes it: the tree is the after tree, paths, bytes and modes
+    let t = transform::run(root, &Options { spec: dir.join("change.toml"), write: true, ..Options::default() }).unwrap();
+    assert_eq!(t.exit_code, 0, "{}", t.said.join("\n"));
+    let made: BTreeMap<_, _> = snapshot(root).into_iter().filter(|(_, (b, _))| b.is_some()).collect();
+    let want: BTreeMap<_, _> = snapshot(after.path()).into_iter().filter(|(_, (b, _))| b.is_some()).collect();
+    assert_eq!(made, want);
+}
+
+#[test]
+fn replay_make_refuses_what_a_replay_cannot_carry_naming_the_path_and_writes_nothing() {
+    let d = workspace(false);
+    let after = tempfile::tempdir().unwrap();
+    copy_tree(d.path(), after.path());
+    put(after.path(), "src/lib.rs", b"pub fn answer() -> u32 {\n    42\n}\n");
+    std::os::unix::fs::symlink("src/lib.rs", after.path().join("lib.link")).unwrap();
+    std::fs::create_dir_all(after.path().join("empty")).unwrap();
+    let specs = tempfile::tempdir().unwrap();
+    let dir = specs.path().join("refused");
+    let o = make(&[d.path().as_os_str(), after.path().as_os_str(), "--out".as_ref(), dir.as_os_str(), "--under".as_ref(), "specimen".as_ref()]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(err.contains("CP0071") && err.contains("lib.link: a symbolic link") && err.contains("empty: an empty folder"), "{err}");
+    assert!(!dir.exists(), "nothing written");
+    // the line as it is read: an action, two trees, --out
+    let words = |w: &[&str]| w.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+    let e = code_passenger::lines::read(&words(&["replay", "make", "a", "b"])).unwrap_err().to_string();
+    assert!(e.contains("needs --out"), "{e}");
+    assert!(code_passenger::lines::read(&words(&["replay", "take", "a", "b", "--out", "o"])).is_err());
+    assert!(code_passenger::lines::read(&words(&["replay", "make", "a", "--out", "o"])).is_err());
+    let l = code_passenger::lines::read(&words(&["--root", "ws", "replay", "make", "a", "b", "--out", "o", "--under", "specimen", "--name", "x1", "--objective", "PASS1 -> PASS2"])).unwrap();
+    assert_eq!(l.command(), "replay");
+}

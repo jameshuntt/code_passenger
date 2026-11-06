@@ -183,15 +183,21 @@ fn the_knowledge_graphs_target_is_a_change_specs_target_as_it_is() {
     assert!(e.contains(&format!("the scan's id for it is `{ID}`")), "{e}");
 }
 
-/// The writer's name: what `version` (and `--version`) prints, and what every record keeps.
+/// The writer's name: what `version` (and `--version`) prints first, and what every record keeps; then the operations
+/// it performs, every word of custodian_kit's `Operation`, `replay` among them.
 #[test]
-fn the_version_line_names_the_writer() {
+fn the_version_line_names_the_writer_and_the_operations_it_performs() {
     for word in ["version", "--version"] {
         let o = Command::new(BIN).arg(word).output().unwrap();
         assert_eq!(o.status.code(), Some(0), "{word}: {}", String::from_utf8_lossy(&o.stderr));
         let said = String::from_utf8_lossy(&o.stdout);
-        assert_eq!(said.trim(), code_passenger::lines::writer());
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines.len(), 2, "{said}");
+        assert_eq!(lines[0], code_passenger::lines::writer());
         assert!(said.starts_with(&format!("code_passenger {} (custodian_kit ", env!("CARGO_PKG_VERSION"))), "{said}");
+        let words: Vec<&str> = lines[1].strip_prefix("operations: ").unwrap().split(' ').collect();
+        assert_eq!(words, custodian_kit::change::Operation::ALL.iter().map(|o| o.as_str()).collect::<Vec<_>>());
+        assert!(words.contains(&"replay"), "{said}");
     }
 }
 

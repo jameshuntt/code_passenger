@@ -78,6 +78,8 @@ pub enum PassengerError {
     // transform (exit 2)
     #[liaise(code = 70, msg = "the change spec cannot be made as it is: {detail}")]
     TransformRefused { detail: String },
+    #[liaise(code = 71, msg = "the replay cannot be made from the two trees, so nothing is written: {detail}")]
+    ReplayRefused { detail: String },
 
     // agent mode, through custodian_kit
     #[liaise(code = 50, msg = "custodian_kit refused: {detail}")]
@@ -108,7 +110,8 @@ impl PassengerError {
             | PassengerError::DepInUse { .. }
             | PassengerError::AttrItem { .. }
             | PassengerError::AttrLine { .. }
-            | PassengerError::TransformRefused { .. } => 2,
+            | PassengerError::TransformRefused { .. }
+            | PassengerError::ReplayRefused { .. } => 2,
             _ => 1,
         }
     }
